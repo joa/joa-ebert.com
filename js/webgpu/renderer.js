@@ -154,7 +154,7 @@ const isNight = timeInfo => {
 
 const isActive = (v, threshold = 0.01) => (v ?? 0) >= threshold
 
-const compactHourForDark = dark => (dark ? 4.0 : 15.5)
+const compactHourForDark = dark => (dark ? 21.9 : 15.5)
 
 const clearRT = (encoder, view, clearValue) => {
   encoder.beginRenderPass({ colorAttachments: [{ view, clearValue, loadOp: "clear", storeOp: "store" }] }).end()
