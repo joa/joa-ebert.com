@@ -1451,7 +1451,7 @@ export class Renderer {
 
     withErrorScopes(ctx.device, "frame", () => this.#encodeFrame(ctx, timeInfo, canvasTexture))
 
-    if (S.isMobile && ctx.queue.onSubmittedWorkDone) {
+    if (S.isTBDR && ctx.queue.onSubmittedWorkDone) {
       this.#gpuFramePending = true
       ctx.queue.onSubmittedWorkDone().finally(() => {
         this.#gpuFramePending = false
