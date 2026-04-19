@@ -3,7 +3,6 @@ import { ExtLink } from "./components/ext-link.js"
 import { LifeSpanRatio } from "./components/life-span-ratio.js"
 import { setupThemeToggle } from "./components/theme-toggle.js"
 
-const ID_PROFILE_WORK = "work-section"
 const ID_PROFILE_MORE = "profile-more"
 const ID_PROFILE_MORE_BTN = "profile-more-btn"
 const COMPONENTS = [ExtLink, LifeSpanRatio]
@@ -48,16 +47,14 @@ function setupScrollIndicator() {
 
 function setupMoreButton() {
   const more = document.getElementById(ID_PROFILE_MORE)
-  const work = document.getElementById(ID_PROFILE_WORK)
   const moreBtn = document.getElementById(ID_PROFILE_MORE_BTN)
   if (!more || !moreBtn) return
 
   moreBtn.addEventListener(
     "click",
     () => {
-      work.hidden = false
       moreBtn.hidden = true
-      awaitIdle().then(() => more.classList.add("expanded"))
+      more.classList.add("expanded")
     },
     { once: true, passive: true }
   )
@@ -76,7 +73,7 @@ class App {
     setupScrollIndicator()
     setupMoreButton()
     setupThemeToggle()
-    awaitIdle()
+    await awaitIdle()
     await this.initCanvas()
   }
 

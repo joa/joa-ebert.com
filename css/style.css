@@ -192,12 +192,14 @@ header.canvas-expanded {
     grid-template-rows: 0fr;
     transition:
       grid-template-rows 2s ease,
-      opacity 2s ease;
+      opacity 2s ease,
+      margin-bottom 2s ease;
   }
 
   #profile-more.expanded {
     @apply opacity-100;
     grid-template-rows: 1fr;
+    margin-bottom: 4rem;
   }
 
   #profile-more > div {
