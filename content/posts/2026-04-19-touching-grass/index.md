@@ -1,6 +1,6 @@
 ---
 title: "Touching Grass"
-date: 2026-03-20
+date: 2026-04-19
 summary: "Returning from a long hiatus: on writer's block, the relaunch of a WebGPU personal site, and touching actual grass."
 description: "After years of perfectionism-induced silence and ~40 abandoned drafts, Joa relaunches his personal site with a WebGPU renderer, reflects on how AI changed his relationship with yak shaving."
 ---

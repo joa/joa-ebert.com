@@ -30,7 +30,7 @@ jobs:
           hugo-version: "0.147.9"
           extended: true
 
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps
 
       - run: npm run build
 
