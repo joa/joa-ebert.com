@@ -90,6 +90,7 @@ export class AdaptiveQuality {
     const out = Object.assign({}, timeInfo)
 
     for (const { key, min, target, targetAt, max } of QUALITY_PARAMS) {
+      if ((timeInfo[key] ?? 0) === 0) { out[key] = 0; continue }
       out[key] = Math.max(min, Math.round(this.#scaleParam(q, min, target, targetAt, max)))
     }
 
@@ -97,8 +98,9 @@ export class AdaptiveQuality {
     if (fogRaw < FOG_VOL_MIN) this.#fogEnabled = false
     else if (fogRaw >= FOG_VOL_MIN + FOG_HYSTERESIS) this.#fogEnabled = true
 
-    out.fogSteps = this.#fogEnabled ? Math.max(FOG_VOL_MIN, fogRaw) : FOG_VOL_MIN
-    out.fogQuality = this.#fogEnabled ? timeInfo.fogQuality : 0
+    const fogDisabled = (timeInfo.fogSteps ?? 0) === 0
+    out.fogSteps = fogDisabled ? 0 : this.#fogEnabled ? Math.max(FOG_VOL_MIN, fogRaw) : FOG_VOL_MIN
+    out.fogQuality = fogDisabled || !this.#fogEnabled ? 0 : timeInfo.fogQuality
     out.depthOfField = timeInfo.depthOfField * q
     out.cloudTop = Math.max(
       Math.min(timeInfo.cloudBase + 4, timeInfo.cloudTop),
