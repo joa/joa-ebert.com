@@ -18,7 +18,7 @@ import S from "../shared/settings.js"
 // ########################################
 
 export const AREA_SIZE = 40.0
-export const BLADE_COUNT = S.isMobile ? 400000 : 1000000
+export const BLADE_COUNT = S.isTBDR ? 400000 : 1000000
 export const BLADE_HEIGHT = 0.3
 export const BLADE_WIDTH = 0.015
 export const BLADE_SEGMENTS = S.isMobile ? 6 : 8
