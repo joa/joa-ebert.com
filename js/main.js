@@ -15,12 +15,6 @@ async function awaitDocument() {
   }
 }
 
-async function awaitIdle(timeout = 1000) {
-  await new Promise(resolve => {
-    requestIdleCallback(resolve, { timeout })
-  })
-}
-
 function registerComponents() {
   const registry = window.customElements
 
@@ -73,7 +67,6 @@ class App {
     setupScrollIndicator()
     setupMoreButton()
     setupThemeToggle()
-    await awaitIdle()
     await this.initCanvas()
   }
 
