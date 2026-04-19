@@ -6,7 +6,7 @@
 
 const idleY = 0.75
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-const isMac = (navigator.userAgentData?.platform ?? navigator.platform).startsWith("Mac")
+const isMac = (navigator.userAgentData?.platform ?? navigator.platform)?.toLowerCase()?.startsWith("mac")
 const isTBDR = isMobile || isMac
 
 export default {
