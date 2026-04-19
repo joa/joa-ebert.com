@@ -100,7 +100,7 @@ All of this was built with the help of AI. The written content is a different st
 ## The use of AI on this Website
 
 Let me be clear: what you're reading on this website has not been written by AI and never will be. Feel free to have a look at
-the CLAUDE.md<ext-link href="https://github.com/joa/website/blob/master/content/CLAUDE.md"></ext-link> file I am using.
+the CLAUDE.md<ext-link href="https://github.com/joa/joa-ebert.com/blob/main/content/CLAUDE.md"></ext-link> file I am using.
 
 I **do** want to make sure my text reads well without errors. I also don't want to end in a "trust me bro" situation.
 
