@@ -1,0 +1,31 @@
+{
+  "name": "joa-ebert.com",
+  "version": "1.0.0",
+  "description": "Personal website of Joa Ebert",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail \"vite\" \"hugo server --watch --port 1313\"",
+    "prebuild": "node scripts/convert-images.js",
+    "build": "vite build && hugo --minify",
+    "start": "vite preview",
+    "hugo:build": "hugo --minify",
+    "hugo:serve": "hugo server --watch --port 1313",
+    "format": "prettier --write .",
+    "lint": "prettier --check .",
+    "build-fonts": "python scripts/subset-fonts.py"
+  },
+  "keywords": [],
+  "author": "Joa Ebert",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.8.1",
+    "sharp": "^0.34.5",
+    "tailwindcss": "^4.2.1",
+    "vite": "^8.0.0",
+    "vite-hugo-plugin": "^5.1.0",
+    "vite-plugin-static-copy": "^2.0.0"
+  }
+}

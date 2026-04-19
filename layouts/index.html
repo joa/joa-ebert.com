@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  {{ partial "head.html" . }}
+  <body>
+    <style>
+      body>header{position:relative;display:flex;flex-direction:column;justify-content:flex-end;width:100%;overflow:hidden;height:62vh;min-height:100px;background:linear-gradient(90deg,#0f150b 0%,#080d06 100%)}
+      @media(min-width:48rem){body>header{min-height:400px}}
+      main{margin-left:auto;margin-right:auto;width:100%;padding:2.5rem 1.25rem}
+      @media(min-width:48rem){main{width:70ch;padding:4rem 2rem}}
+      #canvas-spinner{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;pointer-events:none;transition:opacity 0.5s}
+      #canvas-spinner-ring{width:26px;height:26px;border:1.5px solid rgba(255,255,255,0.12);border-top-color:rgba(255,255,255,0.5);border-radius:50%;animation:canvas-spin 0.85s linear infinite}
+      @keyframes canvas-spin{to{transform:rotate(360deg)}}
+    </style>
+    <header class="header-index">
+      <canvas
+        id="webgpu-canvas"
+        class="absolute inset-0 w-full h-full block z-[1] touch-none select-none"
+      ></canvas>
+      <div id="canvas-spinner" aria-hidden="true"><div id="canvas-spinner-ring"></div></div>
+      <img
+        id="canvas-fallback"
+        data-src="/assets/fallback-large.webp"
+        alt=""
+        aria-hidden="true"
+        class="absolute inset-0 w-full h-full object-cover hidden z-[1]"
+      />
+      <div
+        class="relative z-[2] p-6 md:p-8 text-white pointer-events-none [text-shadow:0_1px_3px_rgba(0,0,0,0.55)]"
+      >
+        <h1
+          class="text-3xl md:text-5xl tracking-tight leading-none font-normal [font-variation-settings:'wdth'_400]"
+        >
+          Joa Ebert
+        </h1>
+        <p class="text-xs md:text-lg opacity-90 font-light">crafting systems, building products, empowering people</p>
+      </div>
+    </header>
+
+    <div
+      id="scroll-indicator"
+      class="fixed bottom-6 right-6 z-50 pointer-events-none invisible"
+      aria-hidden="true"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="scroll-chevron size-7 text-muted"
+      >
+        <polyline points="6 9 12 15 18 9" />
+      </svg>
+    </div>
+
+    <main class="mx-auto w-full px-5 py-10 md:w-[70ch] md:py-16 md:px-8">
+      <section id="about-section" class="mb-8">
+        <div id="about" class="leading-relaxed flex flex-col md:block">
+          <div class="about-photo mt-4 md:mt-0">
+            <img src="/assets/joa.webp" alt="Joa Ebert" />
+          </div>
+          <p class="mb-4">
+            I wrote my first lines of code at eight years old. Nobody asked me to but I was
+            curious and from that moment on I just couldn't stop. That was about
+            <life-span-ratio birth-year="1986" start-year="1994"></life-span-ratio>
+            of my life ago and the passion is still there. I studied mathematics at sixteen, spent
+            my evenings building neural networks in C++ at eighteen
+            and dropped out of university to sleep on a couch in Paris for a startup job. No
+            regrets ✌️
+          </p>
+          <p class="mb-4">
+            Since then I gave talks at international tech conferences, co-founded products used by
+            millions, grown engineering teams from scratch, had two successful exits and helped
+            build infrastructure that major broadcast organizations depend on live, under
+            pressure.
+          </p>
+          <p class="mb-4">
+            I also won numerous design awards somewhere along the way, which matters to me because
+            I think software that works well should also feel right to use.
+          </p>
+          <p>
+            When I moved back to my hometown at the Teutoburger Forest I started to teach
+            teenagers algorithmic problem solving skills and AI fundamentals. I also started doing
+            pro bono consulting for the local startup scene.
+          </p>
+        </div>
+        <button
+          id="profile-more-btn"
+          class="mt-4 p-0 bg-transparent border-none cursor-pointer text-sm tracking-wide text-brand hover:text-brand-dk"
+        >
+          ...more
+        </button>
+      </section>
+
+      <section id="work-section" class="mb-16" hidden>
+        <div id="profile-more">
+          <div>
+            <h2
+              class="text-3xl md:text-4xl mb-8 font-light [font-variation-settings:'wdth'_200] gradient-heading"
+            >
+              Work
+            </h2>
+            <div id="profile" class="leading-relaxed">
+              <div class="break-inside-avoid">
+                <h3
+                  class="text-xs font-normal tracking-widest uppercase pl-3 mb-2 border-l-2 border-brand gradient-label"
+                >
+                  Distributed Systems
+                </h3>
+                <ul class="list-none pl-5 mb-2">
+                  <li class="py-1 pl-2">
+                    Designed and patented<ext-link
+                      href="https://patents.google.com/patent/US11838204B2/"
+                    ></ext-link>
+                    a live video router in the cloud, used by major broadcast organizations
+                    worldwide and the highest profile esports tournaments<ext-link
+                      href="https://www.sportsvideo.org/2019/09/23/how-esl-gaming-streams-big-events-on-small-budgets/"
+                    ></ext-link
+                    >.
+                  </li>
+                  <li class="py-1 pl-2">
+                    Contributed to infrastructure operating at 99.9999% uptime<ext-link
+                      href="https://www.ltnglobal.com"
+                    ></ext-link>
+                    for mission-critical live video delivery
+                  </li>
+                  <li class="py-1 pl-2">
+                    Currently focused on distributed monitoring, ML-based observability and
+                    automation at scale
+                  </li>
+                  <li class="py-1 pl-2">
+                    Built self-healing, resilient autonomous systems at scale
+                  </li>
+                </ul>
+              </div>
+
+              <div class="break-inside-avoid">
+                <h3
+                  class="text-xs font-normal tracking-widest uppercase pl-3 mt-8 mb-2 border-l-2 border-brand gradient-label"
+                >
+                  Engineering Leadership
+                </h3>
+                <ul class="list-none pl-5 mb-2">
+                  <li class="py-1 pl-2">
+                    CTO at Make.TV starting 2016; acquisition by LTN Global Inc.<ext-link
+                      href="https://www.geekwire.com/2019/ltn-global-will-acquire-seattle-startup-make-tv-bolster-live-video-distribution-technology/"
+                    ></ext-link>
+                  </li>
+                  <li class="py-1 pl-2">Strong believer in Servant Leadership principles</li>
+                  <li class="py-1 pl-2">
+                    Scaled early-stage startup to 20+ developers across multiple time zones
+                  </li>
+                  <li class="py-1 pl-2">
+                    Introduced SRE and DevOps practices in multiple organizations
+                  </li>
+                  <li class="py-1 pl-2">Navigated two acquisitions from the engineering side</li>
+                  <li class="py-1 pl-2">Ability to identify, hire and keep top talent</li>
+                  <li class="py-1 pl-2">
+                    Currently working across architecture, distributed systems, and engineering
+                    culture
+                  </li>
+                </ul>
+              </div>
+
+              <div class="break-inside-avoid">
+                <h3
+                  class="text-xs font-normal tracking-widest uppercase pl-3 mt-8 mb-2 border-l-2 border-brand gradient-label"
+                >
+                  Product &amp; UI/UX
+                </h3>
+                <ul class="list-none pl-5 mb-2">
+                  <li class="py-1 pl-2">
+                    Co-founded Audiotool: a browser-based DAW with millions of users<ext-link
+                      href="https://www.audiotool.com"
+                    ></ext-link>
+                  </li>
+                  <li class="py-1 pl-2">
+                    Strong instinct for product development and user experience
+                  </li>
+                  <li class="py-1 pl-2">
+                    Red Dot Award<ext-link
+                      href="https://wrede.design.fh-aachen.de/archives/211.html"
+                    ></ext-link
+                    >, German Design Award winner<ext-link
+                      href="https://www.amazon.de/-/en/Designpreis-Bundesrepublik-Deutschland-2010-deutsch-englisch/dp/3899552873"
+                    ></ext-link
+                    >, and others
+                  </li>
+                </ul>
+              </div>
+
+              <div class="break-inside-avoid">
+                <h3
+                  class="text-xs font-normal tracking-widest uppercase pl-3 mt-8 mb-2 border-l-2 border-brand gradient-label"
+                >
+                  Compilers, VMs &amp; Language Runtimes
+                </h3>
+                <ul class="list-none pl-5 mb-2">
+                  <li class="py-1 pl-2">
+                    Co-founded Defrac: Java bytecode compiler<ext-link
+                      href="https://www.businessinsider.de/gruenderszene/allgemein/defrac-interview/"
+                    ></ext-link>
+                    with SSA optimization pipeline targeting iOS, Android, and the web; acquired by
+                    Make.TV<ext-link
+                      href="https://www.crunchbase.com/acquisition/make-tv-acquires-defrac--e4c31559"
+                    ></ext-link>
+                  </li>
+                  <li class="py-1 pl-2">
+                    LLVM-based AOT compiler and runtime for Java bytecode targeting native and WASM using a Sea-of-Nodes IR
+                  </li>
+                  <li class="py-1 pl-2">
+                    Applied VM and compiler principles to broadcast infrastructure for scalable cloud deployments
+                  </li>
+                  <li class="py-1 pl-2">
+                    Flash bytecode optimization tooling<ext-link
+                      href="https://github.com/joa/apparat"
+                    ></ext-link
+                    >, including a transpiler of shader bytecode
+                  </li>
+                </ul>
+              </div>
+
+              <div class="break-inside-avoid">
+                <h3
+                  class="text-xs font-normal tracking-widest uppercase pl-3 mt-8 mb-2 border-l-2 border-brand gradient-label"
+                >
+                  AI &amp; Machine Learning
+                </h3>
+                <ul class="list-none pl-5 mb-2">
+                  <li class="py-1 pl-2">
+                    Real-time object recognition system, 2005: C++, no GPU, no frameworks
+                  </li>
+                  <li class="py-1 pl-2">Robotics via scholarship, 2004</li>
+                  <li class="py-1 pl-2">
+                    ML-based anomaly detection and predictive incident management in production
+                  </li>
+                  <li class="py-1 pl-2">
+                    Expert systems for incident response using decision tree learning
+                  </li>
+                  <li class="py-1 pl-2">
+                    Distributed agent harness with hierarchical task supervision
+                  </li>
+                </ul>
+              </div>
+
+              <div class="break-inside-avoid">
+                <h3
+                  class="text-xs font-normal tracking-widest uppercase pl-3 mt-8 mb-2 border-l-2 border-brand gradient-label"
+                >
+                  Community
+                </h3>
+                <ul class="list-none pl-5 mb-2">
+                  <li class="py-1 pl-2">
+                    Conference speaker at jsconf.eu<ext-link
+                      href="https://2015.jsconf.eu/speakers/joa-ebert-jvmjs.html"
+                    ></ext-link
+                    >, FITC<ext-link href="https://fitc.ca/speaker/joaebert/"></ext-link> and others
+                  </li>
+                  <li class="py-1 pl-2">
+                    Taught algorithmic problem solving and AI to teenagers at a local
+                    school<ext-link
+                      href="https://ratsgymnasium-bielefeld.de/index.php/wir-vom-rats/chronik/schuljahr-2022-2023"
+                    ></ext-link
+                    >, pro bono
+                  </li>
+                  <li class="py-1 pl-2">Pro bono technology consulting for local startups</li>
+                  <li class="py-1 pl-2">
+                    Open source:
+                    <a
+                      href="https://github.com/joa"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-brand underline decoration-transparent underline-offset-4 transition-colors duration-200 hover:text-brand-dk hover:decoration-brand"
+                      >github.com/joa</a
+                    >
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {{ $posts := where .Site.RegularPages "Section" "posts" }}
+      {{ if $posts }}
+      <section
+        id="blog-section"
+        class="mb-16 pt-10 border-t border-edge-soft bg-(image:--g-radial) bg-position-[0_-150px] bg-no-repeat bg-size-[100%_200px]"
+      >
+        <h2
+          class="text-3xl md:text-4xl mb-8 font-light [font-variation-settings:'wdth'_200] gradient-heading"
+        >
+          Blog
+        </h2>
+        <ul class="blog-list">
+          {{ range $posts }}
+          <li class="blog-entry">
+            <time class="blog-date" datetime="{{ .Date.Format "2006-01-02" }}">{{ .Date.Format "January 2, 2006" }}</time>
+            <a class="blog-title" href="{{ .RelPermalink }}">{{ .Title }}</a>
+          </li>
+          {{ end }}
+        </ul>
+      </section>
+      {{ end }}
+
+      <section
+        id="connect-section"
+        class="mb-16 pt-10 border-t border-edge-soft mx-auto flex flex-col items-center bg-(image:--g-radial) bg-position-[0_-150px] bg-no-repeat bg-size-[100%_200px]"
+      >
+        <p class="mb-6 text-base italic text-muted">Follow me and get in touch.</p>
+        <div class="flex gap-6 items-center justify-center">
+          <a
+            href="mailto:joaebert+onlybotskeepthispart@gmail.com"
+            class="flex transition-all duration-200 text-muted hover:text-brand"
+            aria-label="Email"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+              class="size-6.5"
+            >
+              <path
+                d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"
+              />
+            </svg>
+          </a>
+          <a
+            href="https://github.com/joa"
+            class="flex transition-all duration-200 text-muted hover:text-brand"
+            aria-label="GitHub"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+              class="size-6.5"
+            >
+              <path
+                d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+              />
+            </svg>
+          </a>
+          <a
+            href="https://www.instagram.com/joa.ebert/"
+            class="flex transition-all duration-200 text-muted hover:text-brand"
+            aria-label="Instagram"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+              class="size-6.5"
+            >
+              <path
+                d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zm0 10.162a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z"
+              />
+            </svg>
+          </a>
+          <a
+            href="https://www.linkedin.com/in/joaebert/"
+            class="flex transition-all duration-200 text-muted hover:text-brand"
+            aria-label="LinkedIn"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+              class="size-6.5"
+            >
+              <path
+                d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"
+              />
+            </svg>
+          </a>
+        </div>
+        <div class="flex flex-col items-center text-left text-muted text-base mt-6">
+          <span>Joa Ebert</span>
+          <span>Am Hang 6</span>
+          <span>33619 Bielefeld</span>
+          <span>Germany</span>
+        </div>
+      </section>
+    </main>
+
+    {{ partial "footer.html" . }}
+    <script type="module" src="/js/main.js" async></script>
+  </body>
+</html>

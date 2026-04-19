@@ -1,0 +1,41 @@
+{{ define "main" }}
+<article class="prose">
+  <header class="post-header">
+    <div class="post-meta">
+      <time class="post-date" datetime="{{ .Date.Format "2006-01-02" }}">
+        {{- .Date.Format "January 2, 2006" -}}
+      </time>
+      <div class="flex items-center gap-3">
+        <span class="post-reading-time">{{ .ReadingTime }} min read</span>
+        <button id="theme-toggle" type="button" class="theme-toggle" aria-label="Toggle color scheme">
+          <svg class="icon-sun size-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg class="icon-moon size-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <h1 class="font-light [font-variation-settings:'wdth'_200] gradient-heading text-3xl md:text-4xl mt-2 mb-8">
+      {{- .Title -}}
+    </h1>
+    {{ with .Params.cover }}
+    {{ $src := cond (and (isset . "relative") .relative) (printf "%s%s" $.RelPermalink .image) .image }}
+    <figure class="post-cover-figure">
+      <img class="post-cover" src="{{ $src | safeURL }}" alt="{{ .alt | default $.Title }}" />
+      {{ with .caption }}<figcaption class="post-cover-caption">{{ . }}</figcaption>{{ end }}
+    </figure>
+  {{ end }}
+  </header>
+  {{ if .Params.toc }}
+  <nav class="toc">
+    <p class="toc-label">Table of Contents</p>
+    {{ .TableOfContents }}
+  </nav>
+  {{ end }}
+  <div class="post-body">
+    {{ .Content }}
+  </div>
+</article>
+{{ end }}

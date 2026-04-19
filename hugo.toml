@@ -1,0 +1,29 @@
+baseURL = "https://www.joa-ebert.com/"
+title = "joa-ebert.com"
+contentDir = "content"
+publishDir = "dist"
+defaultContentLanguage = "en"
+disableKinds = ["taxonomy", "term", "section"]
+
+[outputs]
+  home = ["HTML", "RSS"]
+  section = ["HTML"]
+  page = ["HTML"]
+
+[markup.goldmark.renderer]
+  unsafe = true
+
+[markup.goldmark.extensions.passthrough]
+  enable = true
+  [markup.goldmark.extensions.passthrough.delimiters]
+    block = [['\[', '\]'], ['$$', '$$']]
+    inline = [['\(', '\)']]
+
+[markup.highlight]
+  noClasses = false
+  codeFences = true
+
+[markup.tableOfContents]
+  startLevel = 2
+  endLevel = 3
+  ordered = false

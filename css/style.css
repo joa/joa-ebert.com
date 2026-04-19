@@ -1,0 +1,578 @@
+/* Style Sheet
+ * ###########
+ *
+ * Global design tokens, Tailwind component layers, and per-component styles.
+ */
+
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./chroma-light.css";
+@import "./chroma-dark-scoped.css";
+
+/* Design Tokens — colors declared once as light-dark() pairs; color-scheme
+ * on :root / .theme-dark / .theme-light selects which value the browser uses. */
+@theme {
+  /* Surfaces */
+  --color-surface: light-dark(#f3f4f0, #0b0f09);
+  --color-card: light-dark(#e4e8ec, #0e1215);
+  --color-raised: light-dark(#d8dce2, #161a1e);
+
+  /* Typography */
+  --color-fg: light-dark(#16202a, #dce4ea);
+  --color-muted: light-dark(#6e7e8a, #919aa1);
+
+  /* Brand / accent */
+  --color-brand: light-dark(#3d6070, #5a8fa8);
+  --color-brand-lt: light-dark(#4e7a8a, #72a8c0);
+  --color-brand-dk: light-dark(#2d4c5a, #487a92);
+
+  /* Borders */
+  --color-edge: light-dark(#bec8ce, #1e2830);
+  --color-edge-soft: light-dark(#ccd4da, #181e26);
+
+  /* Fonts */
+  --font-sans: "Noto Sans", "Open Sans", sans-serif;
+  --font-mono: "Noto Sans Mono", monospace;
+
+  /* Breakpoints */
+  --breakpoint-md: 48rem;
+}
+
+:root {
+  color-scheme: light dark;
+
+  --color-brand-faint: light-dark(rgba(61, 96, 112, 0.09), rgba(90, 143, 168, 0.12));
+  /* Light-mode gradient defaults; dark overrides below. --g-radial needs no
+   * override because --color-edge-soft already resolves via light-dark(). */
+  --g-heading: linear-gradient(120deg, var(--color-brand-lt) 0%, var(--color-fg) 150%);
+  --g-header: linear-gradient(90deg, #0f150b 0%, #080d06 100%);
+  --g-radial: radial-gradient(var(--color-edge-soft) 0%, transparent 60%);
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --default-mono-font-family: var(--font-mono);
+  --default-mono-font-feature-settings: normal;
+  --default-mono-font-variation-settings: "wdth" 300;
+}
+
+/* Gradient overrides for dark mode — only gradient vars need this;
+ * all --color-* tokens are handled by light-dark() above. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) {
+    --g-heading: linear-gradient(120deg, var(--color-fg) 0%, var(--color-brand) 150%);
+    --g-heading-3: linear-gradient(120deg, var(--color-brand) 0%, var(--color-muted) 150%);
+  }
+}
+
+/* Class-based theme overrides — set by theme-toggle.js. color-scheme switches
+ * all light-dark() tokens automatically; only gradient vars need explicit values. */
+.theme-dark {
+  color-scheme: dark;
+  --g-heading: linear-gradient(120deg, var(--color-fg) 0%, var(--color-brand) 150%);
+  --g-heading-3: linear-gradient(120deg, var(--color-brand) 0%, var(--color-muted) 150%);
+}
+.theme-light {
+  color-scheme: light;
+}
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  html {
+    @apply font-sans font-light;
+    font-optical-sizing: auto;
+    font-variation-settings: "wdth" 300;
+  }
+
+  body {
+    @apply text-lg leading-relaxed text-fg bg-surface overflow-x-hidden antialiased;
+    background-attachment: fixed;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-brand-faint);
+    @apply text-fg;
+  }
+
+  ::marker {
+    @apply text-brand-dk;
+  }
+
+  sup a {
+    font-variant-emoji: text;
+  }
+
+  sup a svg {
+    @apply inline-block;
+  }
+}
+
+/* Unlayered — must beat Tailwind utilities on the index header */
+header.canvas-expanded {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  min-height: unset;
+  z-index: 500;
+}
+
+@layer components {
+  @keyframes scroll-bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(7px);
+    }
+  }
+
+  .scroll-chevron {
+    animation: scroll-bob 1.9s ease-in-out infinite;
+  }
+
+  #scroll-indicator {
+    transition: opacity 0.4s ease;
+  }
+
+  .gradient-heading {
+    @apply w-fit;
+    background: var(--g-heading);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    padding-bottom: 0.1em;
+  }
+
+  .gradient-label {
+    @apply w-fit;
+    background: var(--g-heading-3, var(--g-heading));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .about-photo {
+    @apply block order-last w-full;
+  }
+
+  .about-photo img {
+    @apply w-full h-auto object-cover object-top block rounded-sm;
+    aspect-ratio: 9 / 11;
+    filter: grayscale(15%);
+  }
+
+  @media (min-width: 48rem) {
+    .about-photo {
+      @apply float-right mt-0 ml-8 mb-2 w-auto;
+      order: unset;
+    }
+
+    .about-photo img {
+      width: 180px;
+      height: 220px;
+      aspect-ratio: unset;
+    }
+  }
+
+  #profile-more li {
+    @apply relative;
+  }
+
+  #profile-more li::before {
+    content: "·";
+    @apply absolute -left-3 text-brand-lt;
+  }
+
+  #profile-more {
+    @apply grid opacity-0;
+    grid-template-rows: 0fr;
+    transition:
+      grid-template-rows 2s ease,
+      opacity 2s ease;
+  }
+
+  #profile-more.expanded {
+    @apply opacity-100;
+    grid-template-rows: 1fr;
+  }
+
+  #profile-more > div {
+    @apply overflow-hidden;
+  }
+
+  @media (min-width: 96rem) {
+    #profile-more {
+      @apply relative left-1/2 -translate-x-1/2;
+      width: calc(140ch + 3rem);
+    }
+  }
+
+  #profile {
+    @apply columns-1 gap-x-12;
+  }
+
+  @media (min-width: 64rem) {
+    #profile {
+      @apply columns-2;
+    }
+  }
+
+  /* Index page full-height canvas header — flex column so the name block sits
+   * at the bottom naturally; canvas is absolute and fills the container. */
+  .header-index {
+    @apply relative w-full overflow-hidden flex flex-col justify-end;
+    height: 62vh;
+    min-height: 100px;
+    background: var(--g-header);
+  }
+
+  @media (min-width: 48rem) {
+    .header-index {
+      min-height: 400px;
+    }
+  }
+
+  /* Blog header (20vh, used on Hugo post pages) */
+  .header-blog {
+    @apply relative w-full overflow-hidden;
+    height: 20vh;
+    min-height: 120px;
+  }
+
+  /* Blog post list */
+  .blog-list {
+    @apply list-none p-0 m-0;
+  }
+
+  .blog-list li::marker {
+    content: none;
+  }
+
+  .blog-entry {
+    @apply flex items-baseline gap-4 py-2 border-b border-edge-soft;
+  }
+
+  .blog-entry:last-child {
+    @apply border-b-0;
+  }
+
+  .blog-date {
+    @apply font-mono text-sm text-muted shrink-0;
+  }
+
+  .blog-title {
+    @apply text-fg hover:text-brand transition-colors duration-200;
+    text-decoration: none;
+  }
+
+  /* Post body typography */
+  .prose {
+    @apply leading-relaxed;
+  }
+
+  .post-meta {
+    @apply flex items-center justify-between;
+  }
+
+  .post-date {
+    @apply font-mono text-sm text-muted;
+  }
+
+  .post-reading-time {
+    @apply font-mono text-sm text-muted;
+  }
+
+  .theme-toggle {
+    @apply p-0 bg-transparent border-none cursor-pointer text-muted hover:text-brand transition-colors duration-200 flex items-center;
+  }
+  /* Show moon in light mode (click → go dark), sun in dark mode (click → go light) */
+  .theme-toggle .icon-sun {
+    display: none;
+  }
+  .theme-toggle .icon-moon {
+    display: block;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.theme-light) .theme-toggle .icon-sun {
+      display: block;
+    }
+    :root:not(.theme-light) .theme-toggle .icon-moon {
+      display: none;
+    }
+  }
+  .theme-dark .theme-toggle .icon-sun {
+    display: block;
+  }
+  .theme-dark .theme-toggle .icon-moon {
+    display: none;
+  }
+
+  .post-body h2 {
+    @apply text-2xl font-light mt-10 mb-3 w-fit;
+    font-variation-settings: "wdth" 400;
+
+    background: var(--g-heading);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    padding-bottom: 0.1em;
+  }
+
+  .post-body h3 {
+    @apply text-xl font-light mt-8 mb-2 text-muted w-fit;
+
+    background: var(--g-heading);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    padding-bottom: 0.1em;
+  }
+
+  .post-body p {
+    @apply mb-4;
+  }
+
+  .post-body a {
+    @apply text-brand-lt underline-offset-4 decoration-transparent underline transition-colors duration-200 hover:text-brand hover:decoration-brand;
+  }
+
+  .post-body blockquote {
+    @apply pl-4 my-6 border-l-2 border-brand text-muted italic;
+  }
+
+  .post-body ul,
+  .post-body ol {
+    @apply pl-8 mb-4;
+  }
+
+  .post-body ul {
+    @apply list-disc;
+  }
+
+  .post-body ol {
+    @apply list-decimal;
+  }
+
+  .post-body img {
+    @apply w-full h-auto rounded my-6;
+  }
+
+  .post-body hr {
+    @apply border-edge my-8;
+  }
+
+  .post-body pre,
+  .post-body code {
+    @apply text-sm;
+    font-variation-settings: "wdth" 300;
+    font-weight: 300 !important;
+  }
+
+  .post-body pre {
+    @apply my-4 overflow-x-auto rounded-sm;
+    padding: 0.75rem 1rem;
+  }
+
+  .post-body .chroma .kd,
+  .post-body .chroma .k {
+    font-weight: normal !important;
+  }
+
+  .post-cover-figure {
+    @apply mb-8;
+  }
+
+  .post-cover {
+    @apply w-full h-auto rounded-sm;
+    max-height: 40vh;
+    object-fit: cover;
+  }
+
+  .post-cover-caption {
+    @apply text-xs text-muted font-mono mt-2 text-center block;
+  }
+
+  .toc {
+    @apply mb-8 p-4 rounded-lg border border-edge text-sm;
+    background: color-mix(in srgb, var(--color-card) 60%, transparent);
+  }
+
+  .toc-label {
+    @apply font-mono text-xs text-muted uppercase tracking-widest mb-3;
+  }
+
+  .toc ul {
+    @apply pl-4 space-y-1;
+    list-style: none;
+  }
+
+  .toc ul ul {
+    @apply pl-4 mt-1;
+  }
+
+  .toc a {
+    @apply text-muted hover:text-brand transition-colors duration-150 underline-offset-2 hover:underline;
+  }
+}
+
+/* Controls UI — glass morphism panel (JS-generated markup) */
+.fs-btn,
+.anim-btn,
+.controls-burger {
+  @apply w-10 h-10 rounded-lg flex justify-center items-center cursor-pointer z-1000 transition-colors duration-300;
+}
+
+.fs-btn,
+.anim-btn {
+  @apply relative top-5 left-5 -mb-10 p-0 box-border opacity-60;
+}
+
+.anim-btn {
+  top: 60px;
+}
+
+.anim-btn:hover,
+.fs-btn:hover,
+.controls-burger:hover {
+  @apply backdrop-blur bg-white/18;
+}
+
+.anim-btn svg,
+.fs-btn svg {
+  @apply w-5 h-5 block;
+}
+
+.controls-burger {
+  @apply fixed top-5 right-5 hidden flex-col opacity-60;
+}
+
+.controls-burger.visible {
+  @apply flex;
+}
+
+.controls-burger span {
+  @apply w-6 h-0.5 bg-white my-0.5 transition-[transform,opacity] duration-300;
+}
+
+.controls-burger.open span:nth-child(1) {
+  transform: translateY(6px) rotate(45deg);
+}
+.controls-burger.open span:nth-child(2) {
+  @apply opacity-0;
+}
+.controls-burger.open span:nth-child(3) {
+  transform: translateY(-6px) rotate(-45deg);
+}
+
+.controls-panel {
+  @apply fixed top-0 h-screen z-999 overflow-y-auto font-mono font-light backdrop-blur-lg;
+  right: -320px;
+  width: 300px;
+  padding: 80px 20px 20px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    -4px 0 32px rgba(0, 0, 0, 0.18),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  font-optical-sizing: auto;
+  font-variation-settings: "wdth" 300;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  transition: right 0.4s var(--ease-spring);
+}
+
+.controls-panel::-webkit-scrollbar {
+  @apply w-1;
+}
+.controls-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+.controls-panel.open {
+  @apply right-0;
+}
+
+.controls-title {
+  @apply mb-6 text-lg font-light border-b-2 pb-2;
+  border-color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.control-group {
+  @apply mb-4 pb-4 border-b;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.control-header {
+  @apply flex justify-between items-center mb-2;
+}
+
+.control-label {
+  @apply text-xs font-semibold uppercase tracking-wider;
+  font-variation-settings: "wdth" 600;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.control-value {
+  @apply text-xs font-mono font-light text-right tracking-wider;
+  color: #8ff;
+}
+
+.control-input-row {
+  @apply flex items-center gap-2.5;
+}
+
+.control-slider {
+  @apply grow h-1 rounded-sm outline-none;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.control-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  @apply w-3 h-3 bg-white rounded-full cursor-pointer;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+}
+
+.control-color {
+  @apply border-none w-full h-6 bg-transparent cursor-pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.control-color::-webkit-color-swatch-wrapper {
+  @apply p-0;
+}
+.control-color::-webkit-color-swatch {
+  @apply rounded border border-white/20;
+}
+
+.control-select {
+  @apply flex-1 rounded text-white text-xs py-1 px-1.5 cursor-pointer outline-none;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.control-select:focus {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+.control-select option {
+  @apply text-white;
+  background: #141828;
+}
+
+.control-reset {
+  @apply bg-transparent text-white rounded cursor-pointer transition-all duration-200 py-0.5 px-1.5;
+  font-size: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.control-reset:hover {
+  @apply bg-white/10 border-white;
+}

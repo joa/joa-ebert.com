@@ -1,0 +1,5 @@
+dist
+node_modules
+layouts
+content
+js/shared/math-utils.js

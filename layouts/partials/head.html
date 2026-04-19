@@ -1,0 +1,22 @@
+<head>
+  <meta charset="UTF-8" />
+  <script>
+    (function(){var s=localStorage.getItem("theme"),d=s==="dark"||(s!=="light"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.add(d?"theme-dark":"theme-light")})()
+  </script>
+  <style>
+    :root { background: #f3f4f0; color: #16202a }
+    @media (prefers-color-scheme: dark) { :root { background: #0b0f09; color: #dce4ea } }
+    .theme-dark { background: #0b0f09; color: #dce4ea }
+    .theme-light { background: #f3f4f0; color: #16202a }
+  </style>
+  <link rel="preload" href="/assets/NotoSans-Latin_wdth_wght_.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/assets/NotoSans-Italic-Latin_wdth_wght_.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  {{ if hugo.IsServer }}<link rel="stylesheet" href="/css/style.css" />{{ else }}<link rel="stylesheet" href="/css/main.css" />{{ end }}
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  {{ with .Summary }}<meta name="description" content="{{ . }}" />{{ end }}
+  {{ range .AlternativeOutputFormats -}}
+  <link rel="{{ .Rel }}" type="{{ .MediaType.Type }}" href="{{ .Permalink }}" title="{{ $.Site.Title }}" />
+  {{- end }}
+  <title>{{ if .IsHome }}Joa Ebert — crafting systems, building products, empowering people{{ else }}{{ .Title }} — Joa Ebert{{ end }}</title>
+</head>

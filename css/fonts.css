@@ -1,0 +1,20 @@
+@font-face {
+  font-family: "Noto Sans";
+  font-weight: 100 900;
+  font-stretch: 75% 125%;
+  font-display: swap;
+  src:
+    url("/assets/fonts/NotoSans-Latin[wdth,wght].woff2") format("woff2"),
+    url("/assets/fonts/NotoSans-Latin[wdth,wght].ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Noto Sans";
+  font-style: italic;
+  font-weight: 100 900;
+  font-stretch: 75% 125%;
+  font-display: swap;
+  src:
+    url("/assets/fonts/NotoSans-Italic-Latin[wdth,wght].woff2") format("woff2"),
+    url("/assets/fonts/NotoSans-Italic-Latin[wdth,wght].ttf") format("truetype");
+}

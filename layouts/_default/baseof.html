@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  {{ partial "head.html" . }}
+  <body>
+    <style>
+      body>header{position:relative;width:100%;overflow:hidden;height:20vh;min-height:120px;background:linear-gradient(90deg,#0f150b 0%,#080d06 100%)}
+      main{margin-left:auto;margin-right:auto;width:100%;padding:2.5rem 1.25rem}
+      @media(min-width:48rem){main{width:70ch;padding:4rem 2rem}}
+      #canvas-spinner{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;pointer-events:none;transition:opacity 0.5s}
+      #canvas-spinner-ring{width:26px;height:26px;border:1.5px solid rgba(255,255,255,0.12);border-top-color:rgba(255,255,255,0.5);border-radius:50%;animation:canvas-spin 0.85s linear infinite}
+      @keyframes canvas-spin{to{transform:rotate(360deg)}}
+    </style>
+    <header class="header-blog [background:var(--g-header)]">
+      <canvas
+        id="webgpu-canvas"
+        class="absolute inset-0 w-full h-full block z-[1] touch-none select-none"
+      ></canvas>
+      <div id="canvas-spinner" aria-hidden="true"><div id="canvas-spinner-ring"></div></div>
+      <img
+        id="canvas-fallback"
+        data-src="/assets/fallback-small.webp"
+        alt=""
+        aria-hidden="true"
+        class="absolute inset-0 w-full h-full object-cover hidden z-[1]"
+      />
+      <a
+        href="/"
+        class="absolute bottom-4 left-6 z-[2] text-white/70 hover:text-white text-sm font-light transition-colors duration-200 [text-shadow:0_1px_3px_rgba(0,0,0,0.55)]"
+      >← home</a>
+    </header>
+    <main class="mx-auto w-full px-5 py-10 md:w-[70ch] md:py-16 md:px-8">
+      {{ block "main" . }}{{ end }}
+    </main>
+    {{ partial "footer.html" . }}
+    {{ if hugo.IsServer }}<script type="module" src="/@vite/client"></script>{{ end }}
+    <script type="module" src="/js/main.js"></script>
+    {{ if .Params.math }}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+      onload="renderMathInElement(document.body, {
+        delimiters: [
+          {left: '$$', right: '$$', display: true},
+          {left: '\\[', right: '\\]', display: true},
+          {left: '\\(', right: '\\)', display: false}
+        ]
+      })"></script>
+    {{ end }}
+  </body>
+</html>
