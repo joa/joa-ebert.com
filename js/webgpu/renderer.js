@@ -99,6 +99,10 @@ const COMPACT_OVERRIDES = Object.freeze({
   grassWidthFactor: 0.8,
   overcast: 0,
   turbidity: 2.5 + 0.5 * (Math.random() - 0.5),
+  fogDensity: 0,
+  fogHeightFalloff: 0,
+  fogIntensity: 0,
+  fogQuality: 0,
 })
 
 // NDC frustum corners (x, y, z) where z∈{0,1} selects near/far — expanded per-frame
