@@ -1,0 +1,110 @@
+<svg viewBox="0 0 1000 480" xmlns="http://www.w3.org/2000/svg">
+  <g id="left" transform="translate(40,30)">
+    <g transform="translate(0,20)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(58,20)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(116,10)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(174,0)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(232,10)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(290,20)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(348,40)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(282,350) rotate(-60)">
+      <rect class="k" x="0"  y="0"   width="60" height="50"  rx="4"/>
+      <rect class="k" x="0"  y="58"  width="60" height="50"  rx="4"/>
+      <rect class="k" x="0"  y="116" width="60" height="50"  rx="4"/>
+      <rect class="k" x="68" y="0"   width="60" height="108" rx="4"/>
+    </g>
+  </g>
+  <g id="right" transform="translate(960,30) scale(-1,1)">
+    <g transform="translate(0,20)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(58,20)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(116,10)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(174,0)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(232,10)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="232" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(290,20)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="174" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(348,40)">
+      <rect class="k" x="0" y="0"   width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="58"  width="50" height="50" rx="4"/>
+      <rect class="k" x="0" y="116" width="50" height="50" rx="4"/>
+    </g>
+    <g transform="translate(282,350) rotate(-60)">
+      <rect class="k" x="0"  y="0"   width="60" height="50"  rx="4"/>
+      <rect class="k" x="0"  y="58"  width="60" height="50"  rx="4"/>
+      <rect class="k" x="0"  y="116" width="60" height="50"  rx="4"/>
+      <rect class="k" x="68" y="0"   width="60" height="108" rx="4"/>
+    </g>
+  </g>
+</svg>

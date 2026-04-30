@@ -1,0 +1,110 @@
+:root {
+  --bp-bg:    var(--color-brand-dk);
+  --bp-line:  var(--color-brand);
+  --bp-dim:   var(--color-brand-dk);
+  --bp-glow:  var(--color-brand);
+  --bp-warm:  var(--color-fg);
+}
+
+.typed-word-section {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.typed-word {
+  width: auto;
+  min-height: 1.8em;
+  color: var(--color-fg);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  /*text-shadow: 0 0 8px rgba(255,181,106,0.45);*/
+  white-space: pre;
+  font-family: monospace;
+}
+
+.board {
+  padding: 14px 40px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 920px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.caption {
+  display: flex;
+  gap: 14px;
+  margin: 0 0 8px 4px;
+  align-items: baseline;
+}
+
+.tag {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--bp-line);
+  text-shadow: 0 0 6px rgba(92,220,255,0.4);
+}
+.tag.dim { color: var(--bp-dim); text-shadow: none; }
+
+.distance-counter {
+  margin-left: auto;
+  color: var(--bp-warm);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-shadow: 0 0 6px rgba(255,181,106,0.35);
+  text-transform: uppercase;
+}
+
+/* Original key rectangles */
+svg .k {
+  fill: rgba(92,220,255,0.025);
+  stroke: var(--bp-dim);
+  stroke-width: 1.2;
+}
+
+/* Key-press halo */
+svg .halo {
+  fill: rgba(92,220,255,0.18);
+  stroke: var(--bp-line);
+  stroke-width: 1.5;
+  opacity: 1;
+  filter: drop-shadow(0 0 6px var(--bp-glow));
+  transition: opacity 220ms ease-out, r 220ms ease-out;
+  pointer-events: none;
+}
+svg .halo.halo-fade {
+  opacity: 0;
+  r: 6;
+}
+
+/* Hand parts */
+svg .bone {
+  stroke: var(--bp-line);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(92,220,255,0.55));
+}
+svg .joint {
+  fill: var(--bp-bg);
+  stroke: var(--bp-line);
+  stroke-width: 1.6;
+}
+svg .joint.knuckle {
+  stroke-width: 1.9;
+  filter: drop-shadow(0 0 3px rgba(92,220,255,0.5));
+}
+svg .tip {
+  fill: var(--bp-warm);
+  stroke: var(--bp-warm);
+  stroke-width: 1;
+  filter: drop-shadow(0 0 4px var(--bp-warm));
+}
+svg .palm {
+  fill: var(--bp-bg);
+  stroke: var(--bp-line);
+  stroke-width: 1.8;
+  filter: drop-shadow(0 0 5px rgba(92,220,255,0.4));
+}
