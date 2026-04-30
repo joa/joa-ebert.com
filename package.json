@@ -4,12 +4,12 @@
   "description": "Personal website of Joa Ebert",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail \"vite\" \"hugo server --watch --port 1313\"",
+    "dev": "concurrently --kill-others-on-fail \"vite\" \"hugo server -F --watch --port 1313\"",
     "prebuild": "node scripts/convert-images.js",
     "build": "vite build && hugo --minify",
     "start": "vite preview",
     "hugo:build": "hugo --minify",
-    "hugo:serve": "hugo server --watch --port 1313",
+    "hugo:serve": "hugo server -F --watch --port 1313",
     "format": "prettier --write .",
     "lint": "prettier --check .",
     "build-fonts": "python scripts/subset-fonts.py"

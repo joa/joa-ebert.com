@@ -5,7 +5,7 @@ summary: "Flash as an escape from a small city — and how one piece of software
 description: "A personal memoir tracing how Adobe Flash connected a thirteen-year-old in Bielefeld to IRC communities, Flashforum, conferences, Audiotool, and eventually a compiler startup acquired in 2019."
 tags: ["flash", "life"]
 cover:
-  image: "images/teuto.jpg"
+  image: "images/teuto.webp"
   alt: "Teutoburger Forest"
   relative: true
 ---

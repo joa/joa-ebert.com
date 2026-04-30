@@ -363,6 +363,18 @@ header.canvas-expanded {
     @apply w-full h-auto rounded my-6;
   }
 
+  .post-body figure img {
+    @apply mb-2;
+  }
+
+  .post-body figcaption {
+    @apply text-xs text-muted text-center;
+  }
+
+  .post-body .footnotes {
+    @apply text-sm;
+  }
+
   .post-body hr {
     @apply border-edge my-8;
   }

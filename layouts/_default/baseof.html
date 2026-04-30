@@ -34,6 +34,9 @@
     {{ partial "footer.html" . }}
     {{ if hugo.IsServer }}<script type="module" src="/@vite/client"></script>{{ end }}
     <script type="module" src="/js/main.js"></script>
+    {{ range .Params.scripts }}
+      {{ with $.Resources.Get . }}<script type="module" src="{{ .RelPermalink }}"></script>{{ end }}
+    {{ end }}
     {{ if .Params.math }}
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
