@@ -29,7 +29,7 @@ Five years after the mouse and desk change, when I was still experiencing the sa
 
 <figure>
 {{% include "typist.md" %}}
-  <figcaption><p>Typing Moby Dick at 80 wpm on different keyboards with inverse kinematics.<br>The <em>units travelled</em> measures how far the artificial finger tips moved in total.</p></figcaption>
+  <figcaption><p>Typing Moby Dick at 80 wpm on different keyboards with inverse kinematics. The <em>units travelled</em> measures how far the artificial finger tips moved in total.</p></figcaption>
 </figure>
 
 If you think about how you sit in front of your computer it becomes obvious that your hands make a weird turn to the keyboard, and sometimes you make another weird turn when picking up the mouse. Split keyboards allow you to place the hands naturally in front of you on the table, forming a straight line. Split keyboards with tenting allow you to go one step further and add an angle to the keyboard as if your hands were resting naturally on the table.
