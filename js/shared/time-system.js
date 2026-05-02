@@ -164,7 +164,7 @@ const HOUR_05_30 = {
 const HOUR_06_30 = {
   hour: 6.5,
   overcast: 0.1,
-  turbidity: 2.5,
+  turbidity: 1.9,
   dewAmount: 0.55,
   zenithColor: { r: 0.18, g: 0.22, b: 0.48 },
   horizonColor: { r: 0.78, g: 0.46, b: 0.24 },
@@ -210,7 +210,7 @@ const HOUR_06_30 = {
 const HOUR_08 = {
   hour: 8,
   overcast,
-  turbidity: 5.0,
+  turbidity: 2.1,
   dewAmount: 0.18,
   zenithColor: { r: 0.24, g: 0.42, b: 0.78 },
   horizonColor: { r: 0.76, g: 0.72, b: 0.62 },
