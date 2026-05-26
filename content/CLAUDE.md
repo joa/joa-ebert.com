@@ -12,6 +12,8 @@ Posts are written in Markdown with YAML or TOML front matter.
 
 **Never edit files directly. Always propose changes as a unified diff in a fenced code block. Wait for explicit approval before any follow-up action.**
 
+**Never read sample.md**
+
 ---
 
 ## Voice Extraction
