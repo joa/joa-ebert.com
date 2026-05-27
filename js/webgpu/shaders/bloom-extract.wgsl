@@ -35,8 +35,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
   let color = textureSample(sceneTexture, sceneSampler, input.texCoord).rgb;
   let lum = luminance(color);
 
-  let knee = params.threshold * 0.5;
-  let w = clamp((lum - knee) / (2.0 * knee), 0.0, 1.0);
+  // Ramp starts at threshold, not threshold/2
+  let w = clamp((lum - params.threshold) / max(params.threshold * 0.15, 0.001), 0.0, 1.0);
 
   return vec4f(color * w, 1.0);
 }

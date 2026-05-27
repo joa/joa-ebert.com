@@ -26,7 +26,7 @@ export function buildIntro(sunPosition) {
       type: PATH.LINEAR_QUAT,
       duration: 4,
       from: [-2.33, 1.56, 8.8, -0.89 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
-      to: [-2.33, 1.56, 8.8, -0.89 * Math.PI, 0.0 * Math.PI, -2.0 * Math.PI],
+      to: [-2.33, 1.56, 8.8, -0.89 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
       fixedHeight: true,
       rawT: true,
       fadeIn: true,

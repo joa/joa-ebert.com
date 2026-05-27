@@ -9,7 +9,7 @@ import { buildIntro } from "./intro.js"
 
 const PARAMS = [
   { key: "timeOfDay", label: "Time of Day", min: 0, max: 24, step: 0.1 },
-  { key: "turbidity", label: "Sky Turbidity", min: 2.2, max: 9.3, step: 0.01 },
+  { key: "turbidity", label: "Sky Turbidity", min: 1.0, max: 9.3, step: 0.01 },
   { key: "overcast", label: "Sky Overcast", min: 0, max: 1, step: 0.01 },
   { key: "zenithColor", label: "Zenith Color", type: "color" },
   { key: "horizonColor", label: "Horizon Color", type: "color" },

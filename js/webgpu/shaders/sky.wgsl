@@ -420,8 +420,11 @@ fn atmosphere(dir: vec3f) -> vec3f {
     return nightSky;
   }
   let daySky = preethamSky(dir, sunDir);
+  // Preetham chromaticity near the horizon trends purple; anchor to keyframe horizon.
+  let horizBlend = (1.0 - smoothstep(0.0, 0.25, elevation)) * 0.6;
+  let corrected = mix(daySky, sky.horizonColor, horizBlend);
   let blend = smoothstep(-0.1, 0.15, sunElev);
-  return mix(nightSky, daySky, blend);
+  return mix(nightSky, corrected, blend);
 }
 
 // Mountains
@@ -548,7 +551,7 @@ fn renderMountains(ro: vec3f, rd: vec3f, sunDir: vec3f) -> vec4f {
 
   // Atmospheric haze matching sky color
   let haze = exp(-t * 0.00045);
-  let hazeDir = normalize(vec3f(rd.x, 0.02, rd.z));
+  let hazeDir = normalize(vec3f(rd.x, 0.08, rd.z));
   col = mix(atmosphere(hazeDir), col, haze);
 
   return vec4f(col * vec3f(0.9, 0.9, 1.0), 1.0);

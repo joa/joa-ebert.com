@@ -117,8 +117,8 @@ const HOUR_04 = {
 
 const HOUR_05_30 = {
   hour: 5.5,
-  overcast,
-  turbidity: 3.0,
+  overcast: 0.02,
+  turbidity: 2.02,
   dewAmount: 0.72,
   zenithColor: { r: 0.12, g: 0.1, b: 0.28 },
   horizonColor: { r: 0.38, g: 0.22, b: 0.22 },
@@ -163,8 +163,8 @@ const HOUR_05_30 = {
 
 const HOUR_06_30 = {
   hour: 6.5,
-  overcast: 0.1,
-  turbidity: 1.9,
+  overcast: 0.22,
+  turbidity: 2.44,
   dewAmount: 0.55,
   zenithColor: { r: 0.18, g: 0.22, b: 0.48 },
   horizonColor: { r: 0.78, g: 0.46, b: 0.24 },
@@ -210,8 +210,8 @@ const HOUR_06_30 = {
 const HOUR_08 = {
   hour: 8,
   overcast,
-  turbidity: 2.1,
-  dewAmount: 0.18,
+  turbidity: 2.33,
+  dewAmount: 0.4,
   zenithColor: { r: 0.24, g: 0.42, b: 0.78 },
   horizonColor: { r: 0.76, g: 0.72, b: 0.62 },
   ambientIntensity: 0.82,
@@ -255,8 +255,8 @@ const HOUR_08 = {
 
 const HOUR_10 = {
   hour: 10,
-  overcast: 0.0,
-  turbidity: 3.0,
+  overcast: 0.2,
+  turbidity: 2.4,
   zenithColor: { r: 0.18, g: 0.4, b: 0.86 },
   horizonColor: { r: 0.68, g: 0.82, b: 0.98 },
   ambientIntensity: 0.88,
@@ -300,8 +300,8 @@ const HOUR_10 = {
 
 const HOUR_12 = {
   hour: 12,
-  overcast: 0.0,
-  turbidity: 3.8,
+  overcast: 0.14,
+  turbidity: 2.72,
   zenithColor: { r: 0.16, g: 0.42, b: 0.9 },
   horizonColor: { r: 0.66, g: 0.8, b: 0.98 },
   ambientIntensity: 1.0,
@@ -310,7 +310,7 @@ const HOUR_12 = {
   fogIntensity: 1.0,
   fogQuality,
   colorTemperature: 0.15,
-  bloomIntensity: 0.1,
+  bloomIntensity: 0.05,
   bloomThreshold: 0.999,
   godRayIntensity: 0.08,
   godRayDecay: 0.75,
@@ -333,7 +333,7 @@ const HOUR_12 = {
   cloudSteps,
   cloudShadowSteps,
   rain,
-  lensFlareIntensity: 0.1,
+  lensFlareIntensity: 0.04,
   grainStrength: 0.072,
   vignetteStrength: 1.0,
   rainbowIntensity: 0,
@@ -345,8 +345,8 @@ const HOUR_12 = {
 
 const HOUR_16 = {
   hour: 16,
-  overcast: 0.1,
-  turbidity: 4.0,
+  overcast: 0.32,
+  turbidity: 2.39,
   zenithColor: { r: 0.2, g: 0.44, b: 0.86 },
   horizonColor: { r: 0.66, g: 0.8, b: 0.97 },
   ambientIntensity: 0.9,
@@ -355,7 +355,7 @@ const HOUR_16 = {
   fogIntensity: 1.0,
   fogQuality,
   colorTemperature: 0.28,
-  bloomIntensity: 0.1,
+  bloomIntensity: 0.06,
   bloomThreshold: 0.99,
   godRayIntensity: 0.18,
   godRayDecay: 0.74,
@@ -378,7 +378,7 @@ const HOUR_16 = {
   cloudSteps,
   cloudShadowSteps,
   rain,
-  lensFlareIntensity: 0.2,
+  lensFlareIntensity: 0.08,
   grainStrength: 0.072,
   vignetteStrength: 1.0,
   rainbowIntensity,
@@ -390,8 +390,8 @@ const HOUR_16 = {
 
 const HOUR_18 = {
   hour: 18,
-  overcast: 0.25,
-  turbidity: 2.7,
+  overcast: 0.69,
+  turbidity: 7.7,
   zenithColor: { r: 0.28, g: 0.42, b: 0.72 },
   horizonColor: { r: 0.82, g: 0.55, b: 0.32 },
   ambientIntensity: 0.68,
@@ -435,7 +435,7 @@ const HOUR_18 = {
 
 const HOUR_19_30 = {
   hour: 19.5,
-  overcast: 0.2,
+  overcast: 0.53,
   turbidity: 2.0,
   zenithColor: { r: 0.29, g: 0.45, b: 0.82 },
   horizonColor: { r: 0.72, g: 0.66, b: 0.58 },
@@ -480,8 +480,8 @@ const HOUR_19_30 = {
 
 const HOUR_21 = {
   hour: 21,
-  overcast: 0.2,
-  turbidity: 4.0,
+  overcast: 0.0,
+  turbidity: 2.84,
   zenithColor: { r: 0.15, g: 0.29, b: 0.35 },
   horizonColor: { r: 0.04, g: 0.013, b: 0.29 },
   ambientIntensity: 0.43,
