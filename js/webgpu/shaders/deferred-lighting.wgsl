@@ -256,21 +256,25 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     albedo *= microAO * creviceAO;
   }
 
-  // Ambient
+  // Ambient — geometry shadow bleeds into the ambient floor so contrast survives
+  // high ambientIntensity settings (without this, shadow/lit ratio collapses to ~17%)
   let skyBlend = NdotUp * 0.25;
   let ambientLight = mix(vec3f(1.0), lighting.skyColor, skyBlend) * lighting.ambientIntensity;
-  var ambient = albedo * ambientLight;
+  let ambientShadow = mix(0.38, 1.0, shadow);
+  var ambient = albedo * ambientLight * ambientShadow;
   if (matID == 1) {
     ambient *= microAO * creviceAO;
   }
 
-  // Diffuse
+  // Diffuse — sun contribution uses a gentler coupling to ambientIntensity so
+  // direct light remains meaningful even at high ambient values
+  let sunScale = max(1.0 - lighting.ambientIntensity * 0.6, 0.25);
   let diffBase = albedo * lit * wrapNdotL;
   var diffuseColor: vec3f;
   if (matID == 0) {
-    diffuseColor = diffBase * (1.0 - lighting.ambientIntensity) * 0.85;
+    diffuseColor = diffBase * sunScale * 0.85;
   } else if (matID == 1) {
-    diffuseColor = diffBase * (1.0 - lighting.ambientIntensity) * 0.80;
+    diffuseColor = diffBase * sunScale * 0.80;
   } else {
     diffuseColor = diffBase;
   }

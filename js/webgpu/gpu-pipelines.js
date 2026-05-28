@@ -888,3 +888,6 @@ export function createBloomMipBindGroup(device, layout, uniformBuffer, sampler, 
     [2, view(sourceTexture)],
   ])
 }
+
+// Exported pipeline building blocks for event modules
+export { MRT_TARGETS, DEPTH_WRITE, DEPTH_WRITE_SHADOW, DEPTH_TEST_ONLY, ADDITIVE_BLEND }

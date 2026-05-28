@@ -59,6 +59,7 @@ import {
   createFrameBindGroup,
   createObjectBindGroup,
 } from "./gpu-pipelines.js"
+import { loadActiveModules } from "./events/event-manager.js"
 import {
   bakeMountainHeightmap,
   bakeGroundHeightmap,
@@ -154,7 +155,7 @@ const isNight = timeInfo => {
 
 const isActive = (v, threshold = 0.01) => (v ?? 0) >= threshold
 
-const compactHourForDark = dark => (dark ? 21.9 : 15.5)
+const compactHourForDark = dark => (dark ? 21.9 : 12)
 
 const clearRT = (encoder, view, clearValue) => {
   encoder.beginRenderPass({ colorAttachments: [{ view, clearValue, loadOp: "clear", storeOp: "store" }] }).end()
@@ -277,6 +278,9 @@ export class Renderer {
   #tileBaseX = Number.NaN
   #tileBaseZ = Number.NaN
   #grassTileWorker = new GrassTileWorker()
+
+  // Calendar event modules — populated in init(), empty array outside active date ranges
+  #eventModules = []
 
   // Public-ish systems
   // ##################
@@ -496,6 +500,17 @@ export class Renderer {
 
     this.#rebuildPassBindGroups()
     this.#clearPostProcessTargets()
+
+    const renderAPI = {
+      device: gpu.device,
+      frameBindGroupLayout: frameLayout,
+      objectBindGroupLayout: objectLayout,
+      emptyBindGroupLayout: emptyLayout,
+      gBufferFormats: ["rgba8unorm", "rgba8unorm", "rgba8unorm"],
+      depthFormat: "depth24plus",
+      shadowDepthFormat: "depth32float",
+    }
+    this.#eventModules = await loadActiveModules(gpu, renderAPI)
 
     this.cameraAnimator = new CameraAnimator(
       this.camera,
@@ -1094,6 +1109,7 @@ export class Renderer {
       pass.setIndexBuffer(this.#textBuffers.indices, this.#textBuffers.indexFormat)
       pass.drawIndexed(this.#textBuffers.indexCount)
     }
+    for (const mod of this.#eventModules) mod.renderShadow(pass, ctx)
     pass.end()
   }
 
@@ -1163,6 +1179,7 @@ export class Renderer {
       pass.setVertexBuffer(2, birds.instanceBuffer)
       pass.draw(birds.vertexCount, birds.instanceCount)
     }
+    for (const mod of this.#eventModules) mod.renderGBuffer(pass, ctx)
     pass.end()
   }
 
@@ -1244,6 +1261,7 @@ export class Renderer {
       pass.setVertexBuffer(1, this.#fireflyBuffers.brightness)
       pass.draw(4, eff.fireflyCount)
     }
+    for (const mod of this.#eventModules) mod.renderForward(pass, ctx)
   }
 
   // Temporal SSAO — stable per-pixel kernel rotation, only temporalAlpha changes.
@@ -1434,6 +1452,7 @@ export class Renderer {
     }
     this.#writeDeferredLightingUniforms(ctx, timeInfo)
     this.#updateEffects(ctx, timeInfo)
+    for (const mod of this.#eventModules) mod.update(ctx.deltaTime, ctx, timeInfo, this.windSystem.uniforms)
     this.#writeSkyUniforms(ctx, timeInfo)
     this.#writeRainUniforms(ctx, timeInfo)
     this.#writeGodRayUniforms(ctx, timeInfo)

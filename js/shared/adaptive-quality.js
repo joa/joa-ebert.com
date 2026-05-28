@@ -90,7 +90,10 @@ export class AdaptiveQuality {
     const out = Object.assign({}, timeInfo)
 
     for (const { key, min, target, targetAt, max } of QUALITY_PARAMS) {
-      if ((timeInfo[key] ?? 0) === 0) { out[key] = 0; continue }
+      if ((timeInfo[key] ?? 0) === 0) {
+        out[key] = 0
+        continue
+      }
       out[key] = Math.max(min, Math.round(this.#scaleParam(q, min, target, targetAt, max)))
     }
 
