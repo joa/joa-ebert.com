@@ -3,6 +3,12 @@
 //
 // Reads the G-buffer and produces the final lit image. Fullscreen vertex
 // stage with per-material fragment lighting and debug visualization modes.
+//
+// Pipeline-overridable constant — set to 1 in the mobile scene pipeline so that
+// background pixels are discarded rather than written black. This lets the sky
+// (drawn as the first draw call in the same pass) show through without needing
+// a separate forward pass or depthReadOnly (which Safari/Metal silently breaks).
+override skipBackground: i32 = 0;
 
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
@@ -196,9 +202,12 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   }
 
   if (depth >= 0.9999) {
+    // When skipBackground is set the sky was drawn before this pass; discard so
+    // it shows through. Otherwise return black (forward pass draws sky on top).
+    if (skipBackground != 0) { discard; }
     return vec4f(vec3f(0.0), 1.0);
   }
-  
+
   let albedo_raw = gAlb.rgb;
   let matID = i32(round(gAlb.a * 3.0));
 
