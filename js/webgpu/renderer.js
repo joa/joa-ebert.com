@@ -82,7 +82,7 @@ const FAR = 1000
 const MS_TO_SEC = 0.001
 const SHADOW_DISTANCE_WU = 40
 const SUN_PROJECTION_WU = 1000
-const CLOUD_SHADOW_INTERVAL = S.isMobile ? 11 : 7
+const CLOUD_SHADOW_INTERVAL = S.isMobile ? 15 : 7
 const LIGHTING_INTERVAL = S.isMobile ? 13 : 4
 const FIREFLY_SLOTS = 32
 
@@ -552,7 +552,7 @@ export class Renderer {
       sceneTexture: rt.sceneTexture.createView(),
     }
     for (const t of [rt.ssao, rt.ssaoPrev, rt.ssaoBlur, rt.bloomExtract, rt.godRay, ...rt.bloomMips]) {
-      t.view = t.texture.createView()
+      if (t) t.view = t.texture.createView()
     }
     this.#bloomUpTargets = [...rt.bloomMips.slice(0, BLOOM_LEVELS - 1).reverse(), rt.bloomExtract]
 
@@ -616,10 +616,12 @@ export class Renderer {
       device.createBindGroup({ layout: lay.ssao, entries: ssaoEntries(rt.ssaoPrev) }),
       device.createBindGroup({ layout: lay.ssao, entries: ssaoEntries(rt.ssao) }),
     ]
-    this.#ssaoBlurBgs = [
-      device.createBindGroup({ layout: lay.ssaoBlur, entries: ssaoBlurEntries(rt.ssao) }),
-      device.createBindGroup({ layout: lay.ssaoBlur, entries: ssaoBlurEntries(rt.ssaoPrev) }),
-    ]
+    this.#ssaoBlurBgs = rt.ssaoBlur
+      ? [
+          device.createBindGroup({ layout: lay.ssaoBlur, entries: ssaoBlurEntries(rt.ssao) }),
+          device.createBindGroup({ layout: lay.ssaoBlur, entries: ssaoBlurEntries(rt.ssaoPrev) }),
+        ]
+      : null
 
     // Bloom: extract threshold is fixed; halfTexel uniforms depend on source mip size.
     gpu.queue.writeBuffer(this.#bloomExtractUniformBuffer, 0, new Float32Array([0.8, 0, 0, 0, 0, 0, 0, 0]))
@@ -671,7 +673,7 @@ export class Renderer {
         { binding: 6, resource: lin },
         { binding: 7, resource: rt.godRay.view },
         { binding: 8, resource: lin },
-        { binding: 9, resource: rt.ssaoBlur.view },
+        { binding: 9, resource: (S.isMobile ? rt.ssao : rt.ssaoBlur).view },
         { binding: 10, resource: lin },
         { binding: 11, resource: this.#rtViews.gAlbedo },
         { binding: 12, resource: near },
@@ -708,7 +710,7 @@ export class Renderer {
     if (this.#renderTargets) {
       const rt = this.#renderTargets
       for (const k of ["gAlbedo", "gNormal", "gMaterial", "sceneTexture"]) rt[k]?.destroy()
-      for (const k of ["ssao", "ssaoPrev", "ssaoBlur", "bloomExtract", "godRay"]) rt[k]?.texture.destroy()
+      for (const k of ["ssao", "ssaoPrev", "ssaoBlur", "bloomExtract", "godRay"]) rt[k]?.texture?.destroy()
       for (const m of rt.bloomMips) m.texture.destroy()
       this.#renderTargets = createRenderTargets(this.#gpu, width, height)
       this.#rebuildPassBindGroups()
@@ -725,7 +727,7 @@ export class Renderer {
     const enc = this.#ctx.device.createCommandEncoder()
     clearRT(enc, rt.ssao.view, CLEAR_WHITE)
     clearRT(enc, rt.ssaoPrev.view, CLEAR_WHITE)
-    clearRT(enc, rt.ssaoBlur.view, CLEAR_WHITE)
+    if (rt.ssaoBlur) clearRT(enc, rt.ssaoBlur.view, CLEAR_WHITE)
     clearRT(enc, rt.bloomExtract.view, CLEAR_BLACK)
     clearRT(enc, rt.godRay.view, CLEAR_BLACK)
     this.#ctx.device.queue.submit([enc.finish()])
@@ -1186,6 +1188,11 @@ export class Renderer {
   // Scene pass splits into deferred (no depth attachment — depth bound as a
   // texture for world-pos reconstruction) and forward (loads depth for the sky's
   // less-equal test). iOS Safari does not support merging via depthReadOnly: true.
+  //
+  // Mobile path: draws sky (skyNoDepth) then deferred-discard in a single depth-less
+  // pass. Background pixels are discarded by the deferred shader so the sky shows
+  // through. The forward pass is then skipped when there is nothing else to draw
+  // (no rain, particles, fireflies, or event-module forward renders).
   #renderScenePass(encoder, ctx, timeInfo) {
     if (!this.#renderTargets) return
     const sceneView = this.#rtViews.sceneTexture
@@ -1198,19 +1205,38 @@ export class Renderer {
     this.#drawDeferred(deferred, ctx)
     deferred.end()
 
-    const forward = encoder.beginRenderPass({
-      colorAttachments: [{ view: sceneView, loadOp: "load", storeOp: "store" }],
-      depthStencilAttachment: { view: ctx.depthView, depthLoadOp: "load", depthStoreOp: "store" },
-    })
-    forward.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
-    forward.setBindGroup(0, this.#frameBindGroup)
-    this.#drawForward(forward, ctx, timeInfo)
-    forward.end()
+    const eff = this.effectsSystem
+    const needsForward =
+      !S.isMobile ||
+      timeInfo.rain > 0 ||
+      (eff?.particleCount ?? 0) > 0 ||
+      ((eff?.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) ||
+      this.#eventModules.length > 0
+
+    if (needsForward) {
+      const forward = encoder.beginRenderPass({
+        colorAttachments: [{ view: sceneView, loadOp: "load", storeOp: "store" }],
+        depthStencilAttachment: { view: ctx.depthView, depthLoadOp: "load", depthStoreOp: "store" },
+      })
+      forward.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
+      forward.setBindGroup(0, this.#frameBindGroup)
+      this.#drawForward(forward, ctx, timeInfo)
+      forward.end()
+    }
   }
 
   #drawDeferred(pass, ctx) {
+    // On mobile: sky is drawn first (no depth test) so background pixels are
+    // visible through the deferred discard. On desktop: sky is drawn in the
+    // forward pass with a depth test so no change here.
+    if (S.isMobile && this.#passBindGroups.sky) {
+      pass.setPipeline(this.#pipelines.skyNoDepth)
+      pass.setBindGroup(1, this.#passBindGroups.sky)
+      pass.draw(3)
+    }
+
     // Deferred lighting (fullscreen, depthCompare: always — depth read via sampler).
-    pass.setPipeline(this.#pipelines.deferredLighting)
+    pass.setPipeline(S.isMobile ? this.#pipelines.deferredLightingDiscard : this.#pipelines.deferredLighting)
     pass.setBindGroup(1, this.#passBindGroups.deferredLighting)
     pass.draw(3)
     // Firefly lights (fullscreen additive). Skip when no fireflies are visible.
@@ -1265,11 +1291,15 @@ export class Renderer {
   }
 
   // Temporal SSAO — stable per-pixel kernel rotation, only temporalAlpha changes.
+  // On mobile the blur pass is skipped and temporal is disabled (alpha=1 always):
+  // running half-res with no history avoids needing to rebuild the postprocess
+  // bind group every frame to track the ping-pong target, and the per-pixel jitter
+  // plus linear upsample in postprocess keeps noise acceptable.
   #renderSSAOPass(encoder, ctx) {
     const rt = this.#renderTargets
     if (!rt || !this.#ssaoBgs) return
-    const idx = this.#ssaoFrame % 2
-    this.#ssaoData[2] = this.#ssaoFrame === 0 ? 1 : 0.1
+    const idx = S.isMobile ? 0 : this.#ssaoFrame % 2
+    this.#ssaoData[2] = S.isMobile ? 1 : this.#ssaoFrame === 0 ? 1 : 0.1
     ctx.queue.writeBuffer(this.#ssaoUniformBuffer, 0, this.#ssaoData)
 
     const ssaoTarget = idx === 0 ? rt.ssao : rt.ssaoPrev
@@ -1281,14 +1311,16 @@ export class Renderer {
       this.#ssaoBgs[idx],
       CLEAR_WHITE
     )
-    this.#fullscreenTarget(
-      encoder,
-      rt.ssaoBlur,
-      this.#pipelines.ssaoBlur,
-      this.#frameBindGroup,
-      this.#ssaoBlurBgs[idx],
-      CLEAR_WHITE
-    )
+    if (!S.isMobile) {
+      this.#fullscreenTarget(
+        encoder,
+        rt.ssaoBlur,
+        this.#pipelines.ssaoBlur,
+        this.#frameBindGroup,
+        this.#ssaoBlurBgs[idx],
+        CLEAR_WHITE
+      )
+    }
     this.#ssaoFrame++
   }
 

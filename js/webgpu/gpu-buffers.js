@@ -35,7 +35,7 @@ export const GROUND_N = 256
 export const PARTICLE_COUNT = 1000
 export const FIREFLY_COUNT = 32
 export const RAIN_DROP_COUNT = 15000
-export const BLOOM_LEVELS = S.isMobile ? 2 : 4
+export const BLOOM_LEVELS = S.isMobile ? 1 : 4
 export const NOISE_TEX_WIDTH = S.isMobile ? 32 : 64
 export const NOISE_TEX_HEIGHT = S.isMobile ? 32 : 64
 export const NOISE_TEX_DEPTH = S.isMobile ? 32 : 64
@@ -434,6 +434,11 @@ export function createRenderTargets(gpu, width, height) {
   const divisor = S.isMobile ? 4 : 2
   const hw = Math.max(1, Math.floor(width / divisor))
   const hh = Math.max(1, Math.floor(height / divisor))
+  // Mobile renders SSAO at half-res; temporal accumulation + linear upsample in
+  // postprocess hide the resolution drop. Skip the blur target entirely (the blur
+  // pass is also skipped on mobile — see Renderer#renderSSAOPass).
+  const ssaoW = S.isMobile ? Math.max(1, Math.floor(width / 2)) : width
+  const ssaoH = S.isMobile ? Math.max(1, Math.floor(height / 2)) : height
   // Keep mobile bloom in 8-bit to reduce bandwidth across the extract/down/up chain.
   const bloomFormat = S.isMobile ? "rgba8unorm" : "rgba16float"
   const makeRT = (w, h, fmt) => ({ texture: gpu.createRenderTarget(w, h, fmt), width: w, height: h })
@@ -454,9 +459,9 @@ export function createRenderTargets(gpu, width, height) {
     bloomExtract: makeRT(hw, hh, bloomFormat),
     bloomMips,
     godRay: makeRT(hw, hh),
-    ssao: makeRT(width, height),
-    ssaoPrev: makeRT(width, height),
-    ssaoBlur: makeRT(width, height),
+    ssao: makeRT(ssaoW, ssaoH),
+    ssaoPrev: makeRT(ssaoW, ssaoH),
+    ssaoBlur: S.isMobile ? null : makeRT(width, height),
     bloomHalfW: hw,
     bloomHalfH: hh,
   }

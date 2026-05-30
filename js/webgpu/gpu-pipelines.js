@@ -276,6 +276,7 @@ export function createAllPipelines(device, presentationFormat) {
   const mod = name => modules[name]
   const vs = (wgsl, buffers = []) => ({ module: mod(wgsl), entryPoint: "vertexMain", buffers })
   const fs = (wgsl, targets) => ({ module: mod(wgsl), entryPoint: "fragmentMain", targets })
+  const fsc = (wgsl, targets, constants) => ({ module: mod(wgsl), entryPoint: "fragmentMain", targets, constants })
 
   // Grass
   // #####
@@ -402,6 +403,16 @@ export function createAllPipelines(device, presentationFormat) {
     primitive: { topology: "triangle-list" },
   })
 
+  // Mobile variant: background pixels are discarded so the sky drawn in the same
+  // pass shows through. Eliminates the need for a separate forward pass for sky.
+  pipelines.deferredLightingDiscard = device.createRenderPipeline({
+    label: "deferred-lighting-discard",
+    layout: pLayout(frameLayout, passLayouts.deferredLighting),
+    vertex: vs("deferred-lighting.wgsl"),
+    fragment: fsc("deferred-lighting.wgsl", [{ format: "rgba8unorm" }], { skipBackground: 1 }),
+    primitive: { topology: "triangle-list" },
+  })
+
   // Firefly Lights (deferred additive)
   // ##################################
 
@@ -440,6 +451,17 @@ export function createAllPipelines(device, presentationFormat) {
     vertex: vs("sky.wgsl"),
     fragment: fs("sky.wgsl", [{ format: "rgba8unorm" }]),
     depthStencil: DEPTH_TEST_LEQUAL,
+    primitive: { topology: "triangle-list" },
+  })
+
+  // Mobile variant: drawn as the first call in the depth-less deferred pass so
+  // it covers all pixels without a depth test. deferredLightingDiscard then
+  // overwrites geometry pixels and discards background, letting the sky show through.
+  pipelines.skyNoDepth = device.createRenderPipeline({
+    label: "sky-no-depth",
+    layout: pLayout(frameLayout, passLayouts.sky),
+    vertex: vs("sky.wgsl"),
+    fragment: fs("sky.wgsl", [{ format: "rgba8unorm" }]),
     primitive: { topology: "triangle-list" },
   })
 

@@ -21,11 +21,17 @@ const PHASE_SPLIT = 0.6
 
 // Integer quality params scaled through two-phase lerp.
 // Priority order: cloud → shadow → fog/god rays (lowest).
-const QUALITY_PARAMS = [
-  { key: "godRaySteps", min: 32, target: 48, targetAt: PHASE_SPLIT, max: 64 },
-  { key: "cloudSteps", min: 6, target: 12, targetAt: 0.35, max: 32 },
-  { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
-]
+const QUALITY_PARAMS = S.isMobile
+  ? [
+      { key: "godRaySteps", min: 16, target: 32, targetAt: PHASE_SPLIT, max: 48 },
+      { key: "cloudSteps", min: 6, target: 10, targetAt: 0.35, max: 20 },
+      { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
+    ]
+  : [
+      { key: "godRaySteps", min: 32, target: 48, targetAt: PHASE_SPLIT, max: 64 },
+      { key: "cloudSteps", min: 6, target: 12, targetAt: 0.35, max: 32 },
+      { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
+    ]
 
 // Fog: analytical mode below FOG_VOL_MIN steps; hysteresis band prevents flickering.
 const FOG_VOL_MIN = 12

@@ -4,6 +4,8 @@
 // CPU simulation for rain drops, pollen particles, and fireflies.
 // Manages position/lifetime arrays uploaded each frame to the GPU.
 
+import S from "./settings.js"
+
 export class EffectsSystem {
   // GPU-facing (read by gpu-updates.js each frame or gpu-buffers.js at init)
   particleCount = 0
@@ -26,7 +28,10 @@ export class EffectsSystem {
   #fireflyTime = 0
 
   constructor() {
-    this.#initParticles(1000)
+    // Pollen particles are disabled on mobile: the additive sprite pass forces the
+    // forward render pass to run every frame (extra TBDR tile flush), and the visual
+    // contribution is barely perceptible on small screens.
+    if (!S.isMobile) this.#initParticles(1000)
     this.#initRain(15000)
     this.#initFireflies(32)
   }
