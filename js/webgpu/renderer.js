@@ -1249,8 +1249,10 @@ export class Renderer {
   }
 
   #drawForward(pass, ctx, timeInfo) {
-    // Sky (depthCompare: less-equal — only writes background pixels).
-    if (this.#passBindGroups.sky) {
+    // Sky (depthCompare: less-equal — only writes background pixels). On mobile
+    // the sky is already drawn in #drawDeferred (skyNoDepth), so skip it here to
+    // avoid a redundant fullscreen sky pass when the forward pass runs.
+    if (!S.isMobile && this.#passBindGroups.sky) {
       pass.setPipeline(this.#pipelines.sky)
       pass.setBindGroup(1, this.#passBindGroups.sky)
       pass.draw(3)
