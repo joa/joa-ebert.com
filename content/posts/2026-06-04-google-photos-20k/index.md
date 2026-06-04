@@ -135,7 +135,7 @@ Live Albums were introduced in late 2018 with n=10,000 and then two months later
 
 This is to me the strongest evidence for the 20,000 limitation. Given that Spanner increased their mutation limit I would hope that Google Photos is actually able to increase their album limit as well. Several years have passed since auto-add was introduced in Google Photos and the last time the Spanner limits were increased. 
 
-Note also that Spanner also supports partitioned DML<ext-link href="https://cloud.google.com/spanner/docs/dml-partitioned"></ext-link> which means the mutation limit is not necessarily a hard threshold. But the worms want to stay in their cans. Or do they? It could very well be that a PM picked a round abuse-prevention/UX cap with no deep technical cause. Full-album delete doesn't have to be one commit, so the mutation cap doesn't force a 20k album cap.
+Note that Spanner also supports partitioned DML<ext-link href="https://cloud.google.com/spanner/docs/dml-partitioned"></ext-link> which means the mutation limit is not necessarily a hard threshold. But the worms want to stay in their cans. Or do they? It could very well be that a PM picked a round abuse-prevention/UX cap with no deep technical cause. Full-album delete doesn't have to be one commit, so the mutation cap doesn't force a 20k album cap.
 
 ## Google Drive
 
