@@ -151,16 +151,16 @@ I thought initially there were many Android devices around, many with fairly lim
 
 My best bet for the 20,000 limit is Spanner mutation budgets plus maybe some internal SLOs that must be hit — or that this number is completely non-technical. It makes sense: secondary indices, which albums most probably use, count against this budget. The 20,000 number seems outdated according to the improvements to Spanner and I hope a PM sees this blog post, bumps the numbers and ultimately receives a big fat bonus. You can do it! Us photo hoarders need larger albums. 🥺👉👈 
 
-[^1]: https://developers.google.com/photos/library/reference/rest/v1/albums/batchAddMediaItems 
-[^2]: https://www.androidpolice.com/2018/12/19/google-photos-bumps-album-limit-up-to-20000-pictures/
-[^3]: https://developers.google.com/photos/library/reference/rest/v1/mediaItems
-[^4]: https://developers.google.com/photos/picker/guides/media-items
-[^5]: https://blog.google/products-and-platforms/products/photos/storage-changes/
-[^6]: https://cloud.google.com/blog/products/databases/google-photos-builds-user-experience-on-spanner
-[^7]: https://github.com/mozilla-services/syncstorage-rs/issues/318
-[^8]: https://docs.cloud.google.com/spanner/docs/release-notes#September_27_2022
-[^9]: https://cloud.google.com/blog/products/databases/cloud-spanner-doubles-the-number-of-updates-per-transaction
-[^10]: https://docs.cloud.google.com/spanner/docs/release-notes#December_18_2023
-[^11]: https://support.google.com/a/users/answer/7338880
-[^12]: https://en.wikipedia.org/wiki/Google_Drive
-[^13]: https://cloud.google.com/spanner/quotas
+[^1]: [Google Photos API - Method: albums.batchAddMediaItems](https://developers.google.com/photos/library/reference/rest/v1/albums/batchAddMediaItems)
+[^2]: [Google Photos bumps album limit up to 20,000 pictures and videos - Androidpolice](https://www.androidpolice.com/2018/12/19/google-photos-bumps-album-limit-up-to-20000-pictures/)
+[^3]: [Google Photos API - Resource: mediaItems](https://developers.google.com/photos/library/reference/rest/v1/mediaItems)
+[^4]: [Google Photos API - List and retrieve media items](https://developers.google.com/photos/picker/guides/media-items)
+[^5]: [Updating Google Photos’ storage policy to build for the future - blog.google](https://blog.google/products-and-platforms/products/photos/storage-changes/)
+[^6]: [The big picture: How Google Photos scaled rapidly on Spanner - Google Cloud Blog](https://cloud.google.com/blog/products/databases/google-photos-builds-user-experience-on-spanner)
+[^7]: [Spanner's 20k mutation limit can be triggered by deletes - GitHub Issue](https://github.com/mozilla-services/syncstorage-rs/issues/318)
+[^8]: [Spanner Release Notes Sept 27th 2022](https://docs.cloud.google.com/spanner/docs/release-notes#September_27_2022)
+[^9]: [Cloud Spanner doubles the number of updates per transaction - Google Cloud Blog](https://cloud.google.com/blog/products/databases/cloud-spanner-doubles-the-number-of-updates-per-transaction)
+[^10]: [Spanner Release Notes Dec 18th 2023](https://docs.cloud.google.com/spanner/docs/release-notes#December_18_2023)
+[^11]: [Shared drive limits in Google Drive](https://support.google.com/a/users/answer/7338880)
+[^12]: [Google Drive - Wikipedia](https://en.wikipedia.org/wiki/Google_Drive)
+[^13]: [Spanner: Quotas & limits - Google Cloud](https://cloud.google.com/spanner/quotas)
