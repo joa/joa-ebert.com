@@ -4,14 +4,14 @@ const EVENTS = [
     activeRanges: [{ month: 7, dayStart: 1, dayEnd: 7 }],
     loader: () => import("./fourth-of-july/index.js"),
   },
-  {
+  /*{
     id: "world-cup-2026",
     activeRanges: [
       { month: 6, dayStart: 11, dayEnd: 30 },
       { month: 7, dayStart: 1, dayEnd: 19 },
     ],
     loader: () => import("./world-cup/index.js"),
-  },
+  },*/
 ]
 
 function isEventActive(event, date) {
