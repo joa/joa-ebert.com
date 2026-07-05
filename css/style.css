@@ -14,7 +14,7 @@
 @theme {
   /* Surfaces */
   --color-surface: light-dark(#f3f4f0, #0b0f09);
-  --color-card: light-dark(#e4e8ec, #0e1215);
+  --color-card: light-dark(#e4e8ec, #161c21);
   --color-raised: light-dark(#d8dce2, #161a1e);
 
   /* Typography */
@@ -394,6 +394,20 @@ header.canvas-expanded {
   .post-body .chroma .kd,
   .post-body .chroma .k {
     font-weight: normal !important;
+  }
+
+  .post-body details {
+    @apply mb-4 p-4 rounded-sm;
+    background: var(--color-card);
+  }
+
+  .post-body details > p:last-of-type {
+    @apply mb-0;
+  }
+
+
+  .post-body summary {
+    cursor: pointer;
   }
 
   .post-cover-figure {
