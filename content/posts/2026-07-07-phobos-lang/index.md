@@ -12,7 +12,7 @@ cover:
 toc: true
 ---
 
-> **TLDR:** I've built [Phobos](https://github.com/joa/phobos), a tiny kernel language inspired by Triton. It lowers to PTX and runs on NVIDIA GPUs. It achieves acceptable performance at 76% of cuBLAS SGEMM GFLOP/s on a 2080 SUPER (or 74% of the theoretical GFLOP/s peak). Phobos maps naturally to a distributed tile-DAG design. I only validated the cluster prototype on a single machine; there are no multi-node benchmarks here. This was a personal research project to gain a better understanding of low-level GPU concepts. I only realized the potential for distributed computing when implementing local tile optimizations.
+> **TLDR:** I've built [Phobos](https://github.com/joa/phobos-lang), a tiny kernel language inspired by Triton. It lowers to PTX and runs on NVIDIA GPUs. It achieves acceptable performance at 76% of cuBLAS SGEMM GFLOP/s on a 2080 SUPER (or 74% of the theoretical GFLOP/s peak). Phobos maps naturally to a distributed tile-DAG design. I only validated the cluster prototype on a single machine; there are no multi-node benchmarks here. This was a personal research project to gain a better understanding of low-level GPU concepts. I only realized the potential for distributed computing when implementing local tile optimizations.
 
 ---
 
@@ -970,7 +970,7 @@ It was a lot of fun for me to get my hands dirty again with compiler development
 
 I found it hard to navigate all of this and find an entry for a topic that is usually buried under massive (corporate) frameworks. I achieved _my_ goal. It's the same with training[^15]. You have to get the hours in. There's no way around it. You just have to do the work.
 
-You can find the source code of Phobos at [github.com/joa/phobos](https://github.com/joa/phobos).
+You can find the source code of Phobos at [github.com/joa/phobos](https://github.com/joa/phobos-lang).
 
 [^1]: [NVIDIA CUDA Compiler Driver NVCC](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/contents.html)
 [^2]: [CUDA Toolkit Documentation](https://docs.nvidia.com/cuda/)
