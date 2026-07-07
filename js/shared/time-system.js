@@ -548,6 +548,17 @@ export class TimeSystem {
   #actualTime = currentHour()
   #overrides = {}
 
+  // timeInfo is rebuilt into this single object every frame — every key is
+  // rewritten each call, so consumers must not hold it across frames. The color
+  // sub-objects are owned scratch (reassigned, never mutated through #info, so
+  // override color objects are never corrupted).
+  #info = {}
+  #zenithColor = { r: 0, g: 0, b: 0 }
+  #horizonColor = { r: 0, g: 0, b: 0 }
+  #fogColor = { r: 0, g: 0, b: 0 }
+  #cgLift = [0, 0, 0]
+  #moonPosition = { x: 0, y: 0, z: 0 }
+
   setOverrideTime(timeOfDay, forceActualTime = true) {
     if (timeOfDay === null) {
       this.#overrideTime = null
@@ -579,8 +590,11 @@ export class TimeSystem {
     this.#overrideTime = null
   }
 
-  #lerpColor(ca, cb, t) {
-    return { r: lerp(ca.r, cb.r, t), g: lerp(ca.g, cb.g, t), b: lerp(ca.b, cb.b, t) }
+  #lerpColorInto(out, ca, cb, t) {
+    out.r = lerp(ca.r, cb.r, t)
+    out.g = lerp(ca.g, cb.g, t)
+    out.b = lerp(ca.b, cb.b, t)
+    return out
   }
 
   #lerpKeyframe(timeOfDay) {
@@ -598,78 +612,85 @@ export class TimeSystem {
     const raw = span > 0 ? (timeOfDay - kA.hour) / span : 0
     const ts = smoothstep(raw)
     const L = (a, b, fallback) => lerp(a ?? fallback, b ?? fallback, ts)
-    const LC = (a, b) => this.#lerpColor(a, b, ts)
 
-    return {
-      overcast: L(kA.overcast, kB.overcast, overcast),
-      turbidity: L(kA.turbidity, kB.turbidity, 2.5),
-      zenithColor: LC(kA.zenithColor, kB.zenithColor),
-      horizonColor: LC(kA.horizonColor, kB.horizonColor),
-      fogColor: LC(kA.fogColor ?? kA.horizonColor, kB.fogColor ?? kB.horizonColor),
-      ambientIntensity: L(kA.ambientIntensity, kB.ambientIntensity),
-      fogDensity: L(kA.fogDensity, kB.fogDensity),
-      fogHeightFalloff: L(kA.fogHeightFalloff, kB.fogHeightFalloff),
-      fogIntensity: L(kA.fogIntensity, kB.fogIntensity),
-      fogQuality: L(kA.fogQuality, kB.fogQuality, fogQuality),
-      fogSteps: L(kA.fogSteps, kB.fogSteps, 16),
-      colorTemperature: L(kA.colorTemperature, kB.colorTemperature),
-      bloomIntensity: L(kA.bloomIntensity, kB.bloomIntensity),
-      bloomThreshold: L(kA.bloomThreshold, kB.bloomThreshold),
-      godRayIntensity: L(kA.godRayIntensity, kB.godRayIntensity),
-      godRayDecay: L(kA.godRayDecay, kB.godRayDecay),
-      godRaySteps: L(kA.godRaySteps, kB.godRaySteps, 64),
-      ssaoIntensity: L(kA.ssaoIntensity, kB.ssaoIntensity),
-      chromaticAberration: L(kA.chromaticAberration, kB.chromaticAberration),
-      cgExposure: L(kA.cgExposure, kB.cgExposure),
-      cgContrast: L(kA.cgContrast, kB.cgContrast),
-      cgSaturation: L(kA.cgSaturation, kB.cgSaturation),
-      cgLift: [L(kA.cgLift[0], kB.cgLift[0]), L(kA.cgLift[1], kB.cgLift[1]), L(kA.cgLift[2], kB.cgLift[2])],
-      windStrength: L(kA.windStrength, kB.windStrength),
-      depthOfField: L(kA.depthOfField, kB.depthOfField, depthOfField),
-      dofFocusNear: L(kA.dofFocusNear, kB.dofFocusNear, dofFocusNear),
-      dofFocusFar: L(kA.dofFocusFar, kB.dofFocusFar, dofFocusFar),
-      dofBlurNear: L(kA.dofBlurNear, kB.dofBlurNear, dofBlurNear),
-      dofBlurFar: L(kA.dofBlurFar, kB.dofBlurFar, dofBlurFar),
-      cloudBase: L(kA.cloudBase, kB.cloudBase, cloudBase),
-      cloudTop: L(kA.cloudTop, kB.cloudTop, cloudTop),
-      cloudCoverage: L(kA.cloudCoverage, kB.cloudCoverage, cloudCoverage),
-      cloudSigmaE: L(kA.cloudSigmaE, kB.cloudSigmaE, cloudSigmaE),
-      cloudSteps: L(kA.cloudSteps, kB.cloudSteps, cloudSteps),
-      cloudShadowSteps: L(kA.cloudShadowSteps, kB.cloudShadowSteps, cloudShadowSteps),
-      rain: L(kA.rain, kB.rain, rain),
-      lensFlareIntensity: L(kA.lensFlareIntensity, kB.lensFlareIntensity, 0.26),
-      grainStrength: L(kA.grainStrength, kB.grainStrength, 0.072),
-      vignetteStrength: L(kA.vignetteStrength, kB.vignetteStrength, 1.0),
-      rainbowIntensity: L(kA.rainbowIntensity, kB.rainbowIntensity, rainbowIntensity),
-      grassHeightFactor: L(kA.grassHeightFactor, kB.grassHeightFactor, grassHeightFactor),
-      grassWidthFactor: L(kA.grassWidthFactor, kB.grassWidthFactor, grassWidthFactor),
-      dewAmount: L(kA.dewAmount, kB.dewAmount, 0.0),
-      respiratoryRate: L(kA.respiratoryRate, kB.respiratoryRate, respiratoryRate),
-      heartRate: L(kA.heartRate, kB.heartRate, heartRate),
-      birdSeparationRadius: L(kA.birdSeparationRadius, kB.birdSeparationRadius, 3.5),
-      birdAlignmentRadius: L(kA.birdAlignmentRadius, kB.birdAlignmentRadius, 4.0),
-      birdCohesionRadius: L(kA.birdCohesionRadius, kB.birdCohesionRadius, 3.0),
-      birdSeparationWeight: L(kA.birdSeparationWeight, kB.birdSeparationWeight, 1.35),
-      birdAlignmentWeight: L(kA.birdAlignmentWeight, kB.birdAlignmentWeight, 0.85),
-      birdCohesionWeight: L(kA.birdCohesionWeight, kB.birdCohesionWeight, 0.55),
-      birdSeekWeight: L(kA.birdSeekWeight, kB.birdSeekWeight, 0.85),
-      birdMaxSpeed: L(kA.birdMaxSpeed, kB.birdMaxSpeed, 8.0),
-      birdMaxForce: L(kA.birdMaxForce, kB.birdMaxForce, 3.0),
-      birdWingBeat: L(kA.birdWingBeat, kB.birdWingBeat, 0.09),
-      birdWingAmplitude: L(kA.birdWingAmplitude, kB.birdWingAmplitude, 0.41),
-      birdAltitude: L(kA.birdAltitude, kB.birdAltitude, 38.0),
-      birdScale: L(kA.birdScale, kB.birdScale, 0.6),
-      fireflyIntensity: L(kA.fireflyIntensity, kB.fireflyIntensity, 1.0),
-      fireflyLightRadius: L(kA.fireflyLightRadius, kB.fireflyLightRadius, 4.0),
-      chemtrailCount: L(kA.chemtrailCount, kB.chemtrailCount, 3),
-      chemtrailOpacity: L(kA.chemtrailOpacity, kB.chemtrailOpacity, 0.015),
-      chemtrailWidth: L(kA.chemtrailWidth, kB.chemtrailWidth, 0.01),
-      sparkleEnabled: L(kA.sparkleEnabled, kB.sparkleEnabled, 1.0),
-      sparkleIntensity: L(kA.sparkleIntensity, kB.sparkleIntensity, 0.3),
-      sparkleDensity: L(kA.sparkleDensity, kB.sparkleDensity, 20.0),
-      sparkleSharpness: L(kA.sparkleSharpness, kB.sparkleSharpness, 0.4),
-      sparkleSpeed: L(kA.sparkleSpeed, kB.sparkleSpeed, 2.12),
-    }
+    // Written into the reused #info object — no per-frame allocation.
+    const p = this.#info
+    p.overcast = L(kA.overcast, kB.overcast, overcast)
+    p.turbidity = L(kA.turbidity, kB.turbidity, 2.5)
+    p.zenithColor = this.#lerpColorInto(this.#zenithColor, kA.zenithColor, kB.zenithColor, ts)
+    p.horizonColor = this.#lerpColorInto(this.#horizonColor, kA.horizonColor, kB.horizonColor, ts)
+    p.fogColor = this.#lerpColorInto(this.#fogColor, kA.fogColor ?? kA.horizonColor, kB.fogColor ?? kB.horizonColor, ts)
+    p.ambientIntensity = L(kA.ambientIntensity, kB.ambientIntensity)
+    p.fogDensity = L(kA.fogDensity, kB.fogDensity)
+    p.fogHeightFalloff = L(kA.fogHeightFalloff, kB.fogHeightFalloff)
+    p.fogIntensity = L(kA.fogIntensity, kB.fogIntensity)
+    p.fogQuality = L(kA.fogQuality, kB.fogQuality, fogQuality)
+    p.fogSteps = L(kA.fogSteps, kB.fogSteps, 16)
+    p.colorTemperature = L(kA.colorTemperature, kB.colorTemperature)
+    p.bloomIntensity = L(kA.bloomIntensity, kB.bloomIntensity)
+    p.bloomThreshold = L(kA.bloomThreshold, kB.bloomThreshold)
+    p.godRayIntensity = L(kA.godRayIntensity, kB.godRayIntensity)
+    p.godRayDecay = L(kA.godRayDecay, kB.godRayDecay)
+    p.godRaySteps = L(kA.godRaySteps, kB.godRaySteps, 64)
+    p.ssaoIntensity = L(kA.ssaoIntensity, kB.ssaoIntensity)
+    p.chromaticAberration = L(kA.chromaticAberration, kB.chromaticAberration)
+    p.cgExposure = L(kA.cgExposure, kB.cgExposure)
+    p.cgContrast = L(kA.cgContrast, kB.cgContrast)
+    p.cgSaturation = L(kA.cgSaturation, kB.cgSaturation)
+    const cgLift = this.#cgLift
+    cgLift[0] = L(kA.cgLift[0], kB.cgLift[0])
+    cgLift[1] = L(kA.cgLift[1], kB.cgLift[1])
+    cgLift[2] = L(kA.cgLift[2], kB.cgLift[2])
+    p.cgLift = cgLift
+    p.windStrength = L(kA.windStrength, kB.windStrength)
+    p.depthOfField = L(kA.depthOfField, kB.depthOfField, depthOfField)
+    p.dofFocusNear = L(kA.dofFocusNear, kB.dofFocusNear, dofFocusNear)
+    p.dofFocusFar = L(kA.dofFocusFar, kB.dofFocusFar, dofFocusFar)
+    p.dofBlurNear = L(kA.dofBlurNear, kB.dofBlurNear, dofBlurNear)
+    p.dofBlurFar = L(kA.dofBlurFar, kB.dofBlurFar, dofBlurFar)
+    p.cloudBase = L(kA.cloudBase, kB.cloudBase, cloudBase)
+    p.cloudTop = L(kA.cloudTop, kB.cloudTop, cloudTop)
+    p.cloudCoverage = L(kA.cloudCoverage, kB.cloudCoverage, cloudCoverage)
+    p.cloudSigmaE = L(kA.cloudSigmaE, kB.cloudSigmaE, cloudSigmaE)
+    p.cloudSteps = L(kA.cloudSteps, kB.cloudSteps, cloudSteps)
+    p.cloudShadowSteps = L(kA.cloudShadowSteps, kB.cloudShadowSteps, cloudShadowSteps)
+    p.mountainSteps = L(kA.mountainSteps, kB.mountainSteps, 64)
+    p.rain = L(kA.rain, kB.rain, rain)
+    p.lensFlareIntensity = L(kA.lensFlareIntensity, kB.lensFlareIntensity, 0.26)
+    p.grainStrength = L(kA.grainStrength, kB.grainStrength, 0.072)
+    p.vignetteStrength = L(kA.vignetteStrength, kB.vignetteStrength, 1.0)
+    p.rainbowIntensity = L(kA.rainbowIntensity, kB.rainbowIntensity, rainbowIntensity)
+    p.grassHeightFactor = L(kA.grassHeightFactor, kB.grassHeightFactor, grassHeightFactor)
+    p.grassWidthFactor = L(kA.grassWidthFactor, kB.grassWidthFactor, grassWidthFactor)
+    p.grassCulling = L(kA.grassCulling, kB.grassCulling, 1.0)
+    p.shadowGrassDensity = L(kA.shadowGrassDensity, kB.shadowGrassDensity, 1.0)
+    p.dewAmount = L(kA.dewAmount, kB.dewAmount, 0.0)
+    p.respiratoryRate = L(kA.respiratoryRate, kB.respiratoryRate, respiratoryRate)
+    p.heartRate = L(kA.heartRate, kB.heartRate, heartRate)
+    p.birdSeparationRadius = L(kA.birdSeparationRadius, kB.birdSeparationRadius, 3.5)
+    p.birdAlignmentRadius = L(kA.birdAlignmentRadius, kB.birdAlignmentRadius, 4.0)
+    p.birdCohesionRadius = L(kA.birdCohesionRadius, kB.birdCohesionRadius, 3.0)
+    p.birdSeparationWeight = L(kA.birdSeparationWeight, kB.birdSeparationWeight, 1.35)
+    p.birdAlignmentWeight = L(kA.birdAlignmentWeight, kB.birdAlignmentWeight, 0.85)
+    p.birdCohesionWeight = L(kA.birdCohesionWeight, kB.birdCohesionWeight, 0.55)
+    p.birdSeekWeight = L(kA.birdSeekWeight, kB.birdSeekWeight, 0.85)
+    p.birdMaxSpeed = L(kA.birdMaxSpeed, kB.birdMaxSpeed, 8.0)
+    p.birdMaxForce = L(kA.birdMaxForce, kB.birdMaxForce, 3.0)
+    p.birdWingBeat = L(kA.birdWingBeat, kB.birdWingBeat, 0.09)
+    p.birdWingAmplitude = L(kA.birdWingAmplitude, kB.birdWingAmplitude, 0.41)
+    p.birdAltitude = L(kA.birdAltitude, kB.birdAltitude, 38.0)
+    p.birdScale = L(kA.birdScale, kB.birdScale, 0.6)
+    p.fireflyIntensity = L(kA.fireflyIntensity, kB.fireflyIntensity, 1.0)
+    p.fireflyLightRadius = L(kA.fireflyLightRadius, kB.fireflyLightRadius, 4.0)
+    p.chemtrailCount = L(kA.chemtrailCount, kB.chemtrailCount, 3)
+    p.chemtrailOpacity = L(kA.chemtrailOpacity, kB.chemtrailOpacity, 0.015)
+    p.chemtrailWidth = L(kA.chemtrailWidth, kB.chemtrailWidth, 0.01)
+    p.sparkleEnabled = L(kA.sparkleEnabled, kB.sparkleEnabled, 1.0)
+    p.sparkleIntensity = L(kA.sparkleIntensity, kB.sparkleIntensity, 0.3)
+    p.sparkleDensity = L(kA.sparkleDensity, kB.sparkleDensity, 20.0)
+    p.sparkleSharpness = L(kA.sparkleSharpness, kB.sparkleSharpness, 0.4)
+    p.sparkleSpeed = L(kA.sparkleSpeed, kB.sparkleSpeed, 2.12)
+    return p
   }
 
   rawTime() {
@@ -701,32 +722,40 @@ export class TimeSystem {
 
     const solarDate = this.#overrideTime !== null ? dateForLocalHour(timeOfDay) : new Date()
     const { elevationDeg, azimuthDeg } = solarElevationAzimuth(solarDate)
+    // sunPosition stays a fresh object — buildIntro() captures it across frames.
     const sunPosition = solarDirection(elevationDeg, azimuthDeg)
     const mx = -sunPosition.x
     const my = -sunPosition.y + 0.1
     const mz = sunPosition.z
     const mlen = Math.sqrt(mx * mx + my * my + mz * mz)
-    const moonPosition = { x: mx / mlen, y: my / mlen, z: mz / mlen }
-    const params = this.#lerpKeyframe(timeOfDay)
-    const result = {
-      period,
-      timeOfDay,
-      sunPosition,
-      moonPosition,
-      sunAboveHorizon: sunPosition.y > 0,
-      hasStars: period === PERIOD_NIGHT,
-      hasGodRays: period === PERIOD_GOLDEN || period === PERIOD_DAY,
-      ...params,
-    }
+    const moonPosition = this.#moonPosition
+    moonPosition.x = mx / mlen
+    moonPosition.y = my / mlen
+    moonPosition.z = mz / mlen
+
+    // #lerpKeyframe rewrites every keyframed key of #info; derived fields and
+    // overrides are layered on top afterwards.
+    const result = this.#lerpKeyframe(timeOfDay)
+    result.period = period
+    result.timeOfDay = timeOfDay
+    result.sunPosition = sunPosition
+    result.moonPosition = moonPosition
+    result.sunAboveHorizon = sunPosition.y > 0
+    result.hasStars = period === PERIOD_NIGHT
+    result.hasGodRays = period === PERIOD_GOLDEN || period === PERIOD_DAY
 
     for (const key in this.#overrides) result[key] = this.#overrides[key]
 
     return result
   }
 
+  // Pure keyframe value for one parameter, without overrides. #lerpKeyframe
+  // rewrites the shared timeInfo object, so the overrides must be re-layered
+  // afterwards — the camera animator calls this mid-frame while consumers are
+  // still holding the current frame's timeInfo.
   rawParam(k) {
-    const timeOfDay = this.#actualTime
-    const params = this.#lerpKeyframe(timeOfDay)
-    return params[k]
+    const raw = this.#lerpKeyframe(this.#actualTime)[k]
+    for (const key in this.#overrides) this.#info[key] = this.#overrides[key]
+    return raw
   }
 }

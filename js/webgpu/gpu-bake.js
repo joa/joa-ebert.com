@@ -87,6 +87,13 @@ const NOISE_SIZE_X = NOISE_TEX_WIDTH
 const NOISE_SIZE_Y = NOISE_TEX_HEIGHT
 const NOISE_SIZE_Z = NOISE_TEX_DEPTH
 
+// Hoisted from sampleNoise3D — defining these as closures per call created
+// ~176 short-lived functions per throttled lighting frame.
+const wrapX = c => ((c % NOISE_SIZE_X) + NOISE_SIZE_X) % NOISE_SIZE_X
+const wrapY = c => ((c % NOISE_SIZE_Y) + NOISE_SIZE_Y) % NOISE_SIZE_Y
+const wrapZ = c => ((c % NOISE_SIZE_Z) + NOISE_SIZE_Z) % NOISE_SIZE_Z
+const noiseAt = (data, x, y, z) => data[(wrapZ(z) * NOISE_SIZE_Y + wrapY(y)) * NOISE_SIZE_X + wrapX(x)] / 255
+
 function sampleNoise3D(data, u, v, w) {
   u = ((u % 1) + 1) % 1
   v = ((v % 1) + 1) % 1
@@ -100,19 +107,15 @@ function sampleNoise3D(data, u, v, w) {
   const dx = fx - ix,
     dy = fy - iy,
     dz = fz - iz
-  const wrapX = c => ((c % NOISE_SIZE_X) + NOISE_SIZE_X) % NOISE_SIZE_X
-  const wrapY = c => ((c % NOISE_SIZE_Y) + NOISE_SIZE_Y) % NOISE_SIZE_Y
-  const wrapZ = c => ((c % NOISE_SIZE_Z) + NOISE_SIZE_Z) % NOISE_SIZE_Z
-  const at = (x, y, z) => data[(wrapZ(z) * NOISE_SIZE_Y + wrapY(y)) * NOISE_SIZE_X + wrapX(x)] / 255
   return (
-    at(ix, iy, iz) * (1 - dx) * (1 - dy) * (1 - dz) +
-    at(ix + 1, iy, iz) * dx * (1 - dy) * (1 - dz) +
-    at(ix, iy + 1, iz) * (1 - dx) * dy * (1 - dz) +
-    at(ix + 1, iy + 1, iz) * dx * dy * (1 - dz) +
-    at(ix, iy, iz + 1) * (1 - dx) * (1 - dy) * dz +
-    at(ix + 1, iy, iz + 1) * dx * (1 - dy) * dz +
-    at(ix, iy + 1, iz + 1) * (1 - dx) * dy * dz +
-    at(ix + 1, iy + 1, iz + 1) * dx * dy * dz
+    noiseAt(data, ix, iy, iz) * (1 - dx) * (1 - dy) * (1 - dz) +
+    noiseAt(data, ix + 1, iy, iz) * dx * (1 - dy) * (1 - dz) +
+    noiseAt(data, ix, iy + 1, iz) * (1 - dx) * dy * (1 - dz) +
+    noiseAt(data, ix + 1, iy + 1, iz) * dx * dy * (1 - dz) +
+    noiseAt(data, ix, iy, iz + 1) * (1 - dx) * (1 - dy) * dz +
+    noiseAt(data, ix + 1, iy, iz + 1) * dx * (1 - dy) * dz +
+    noiseAt(data, ix, iy + 1, iz + 1) * (1 - dx) * dy * dz +
+    noiseAt(data, ix + 1, iy + 1, iz + 1) * dx * dy * dz
   )
 }
 

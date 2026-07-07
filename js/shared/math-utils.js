@@ -3,6 +3,31 @@ export function normalize([x, y, z]) {
   return len > 0 ? [x / len, y / len, z / len] : [0, 0, 0]
 }
 
+// Allocation-free variants for per-frame hot paths. Arithmetic is identical to
+// the allocating counterparts so results match bit-for-bit.
+
+export function normalizeInto(out, x, y, z) {
+  const len = Math.sqrt(x * x + y * y + z * z)
+  if (len > 0) {
+    out[0] = x / len
+    out[1] = y / len
+    out[2] = z / len
+  } else {
+    out[0] = 0
+    out[1] = 0
+    out[2] = 0
+  }
+  return out
+}
+
+export function multiplyMVInto(out, m, x, y, z, w) {
+  out[0] = m[0] * x + m[4] * y + m[8] * z + m[12] * w
+  out[1] = m[1] * x + m[5] * y + m[9] * z + m[13] * w
+  out[2] = m[2] * x + m[6] * y + m[10] * z + m[14] * w
+  out[3] = m[3] * x + m[7] * y + m[11] * z + m[15] * w
+  return out
+}
+
 export function subtract(a, b) {
   const [ax, ay, az] = a
   const [bx, by, bz] = b
@@ -30,27 +55,31 @@ export function multiplyMV(m, v) {
   ]
 }
 
-export function multiplyMM(a, b) {
+// Inputs are read into locals first, so `out` may alias `a` or `b`.
+export function multiplyMMInto(out, a, b) {
   const [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15] = a
   const [b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15] = b
-  return [
-    a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3,
-    a1 * b0 + a5 * b1 + a9 * b2 + a13 * b3,
-    a2 * b0 + a6 * b1 + a10 * b2 + a14 * b3,
-    a3 * b0 + a7 * b1 + a11 * b2 + a15 * b3,
-    a0 * b4 + a4 * b5 + a8 * b6 + a12 * b7,
-    a1 * b4 + a5 * b5 + a9 * b6 + a13 * b7,
-    a2 * b4 + a6 * b5 + a10 * b6 + a14 * b7,
-    a3 * b4 + a7 * b5 + a11 * b6 + a15 * b7,
-    a0 * b8 + a4 * b9 + a8 * b10 + a12 * b11,
-    a1 * b8 + a5 * b9 + a9 * b10 + a13 * b11,
-    a2 * b8 + a6 * b9 + a10 * b10 + a14 * b11,
-    a3 * b8 + a7 * b9 + a11 * b10 + a15 * b11,
-    a0 * b12 + a4 * b13 + a8 * b14 + a12 * b15,
-    a1 * b12 + a5 * b13 + a9 * b14 + a13 * b15,
-    a2 * b12 + a6 * b13 + a10 * b14 + a14 * b15,
-    a3 * b12 + a7 * b13 + a11 * b14 + a15 * b15,
-  ]
+  out[0] = a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3
+  out[1] = a1 * b0 + a5 * b1 + a9 * b2 + a13 * b3
+  out[2] = a2 * b0 + a6 * b1 + a10 * b2 + a14 * b3
+  out[3] = a3 * b0 + a7 * b1 + a11 * b2 + a15 * b3
+  out[4] = a0 * b4 + a4 * b5 + a8 * b6 + a12 * b7
+  out[5] = a1 * b4 + a5 * b5 + a9 * b6 + a13 * b7
+  out[6] = a2 * b4 + a6 * b5 + a10 * b6 + a14 * b7
+  out[7] = a3 * b4 + a7 * b5 + a11 * b6 + a15 * b7
+  out[8] = a0 * b8 + a4 * b9 + a8 * b10 + a12 * b11
+  out[9] = a1 * b8 + a5 * b9 + a9 * b10 + a13 * b11
+  out[10] = a2 * b8 + a6 * b9 + a10 * b10 + a14 * b11
+  out[11] = a3 * b8 + a7 * b9 + a11 * b10 + a15 * b11
+  out[12] = a0 * b12 + a4 * b13 + a8 * b14 + a12 * b15
+  out[13] = a1 * b12 + a5 * b13 + a9 * b14 + a13 * b15
+  out[14] = a2 * b12 + a6 * b13 + a10 * b14 + a14 * b15
+  out[15] = a3 * b12 + a7 * b13 + a11 * b14 + a15 * b15
+  return out
+}
+
+export function multiplyMM(a, b) {
+  return multiplyMMInto(new Array(16), a, b)
 }
 
 export function perspectiveMatrixWebGPU(fov, aspect, near, far) {
@@ -83,8 +112,72 @@ export function orthographicMatrixWebGPU(left, right, bottom, top, near, far) {
   ]
 }
 
-export function invertMatrix4(m) {
-  const out = new Float32Array(16)
+export function lookAtMatrixInto(out, ex, ey, ez, tx, ty, tz, ux, uy, uz) {
+  // z = normalize(eye - target)
+  let zx = ex - tx,
+    zy = ey - ty,
+    zz = ez - tz
+  const zLen = Math.sqrt(zx * zx + zy * zy + zz * zz)
+  if (zLen > 0) {
+    zx /= zLen
+    zy /= zLen
+    zz /= zLen
+  } else {
+    zx = zy = zz = 0
+  }
+  // x = normalize(cross(up, z))
+  let xx = uy * zz - uz * zy,
+    xy = uz * zx - ux * zz,
+    xz = ux * zy - uy * zx
+  const xLen = Math.sqrt(xx * xx + xy * xy + xz * xz)
+  if (xLen > 0) {
+    xx /= xLen
+    xy /= xLen
+    xz /= xLen
+  } else {
+    xx = xy = xz = 0
+  }
+  // y = cross(z, x)
+  const yx = zy * xz - zz * xy,
+    yy = zz * xx - zx * xz,
+    yz = zx * xy - zy * xx
+  out[0] = xx
+  out[1] = yx
+  out[2] = zx
+  out[3] = 0
+  out[4] = xy
+  out[5] = yy
+  out[6] = zy
+  out[7] = 0
+  out[8] = xz
+  out[9] = yz
+  out[10] = zz
+  out[11] = 0
+  out[12] = -(xx * ex + xy * ey + xz * ez)
+  out[13] = -(yx * ex + yy * ey + yz * ez)
+  out[14] = -(zx * ex + zy * ey + zz * ez)
+  out[15] = 1
+  return out
+}
+
+export function orthographicMatrixWebGPUInto(out, left, right, bottom, top, near, far) {
+  const rl = right - left
+  const tb = top - bottom
+  const fn_ = far - near
+  out.fill(0)
+  out[0] = 2 / rl
+  out[5] = 2 / tb
+  out[10] = -1 / fn_
+  out[12] = -(right + left) / rl
+  out[13] = -(top + bottom) / tb
+  out[14] = -near / fn_
+  out[15] = 1
+  return out
+}
+
+// Inputs are read into locals first, so `out` may alias `m`. A singular matrix
+// leaves `m` copied through unchanged (mirrors invertMatrix4 returning `m`).
+export function invertMatrix4Into(out, m) {
   const [m00, m10, m20, m30, m01, m11, m21, m31, m02, m12, m22, m32, m03, m13, m23, m33] = m
   const b00 = m00 * m11 - m10 * m01, b01 = m00 * m21 - m20 * m01
   const b02 = m00 * m31 - m30 * m01, b03 = m10 * m21 - m20 * m11
@@ -93,7 +186,10 @@ export function invertMatrix4(m) {
   const b08 = m02 * m33 - m32 * m03, b09 = m12 * m23 - m22 * m13
   const b10 = m12 * m33 - m32 * m13, b11 = m22 * m33 - m32 * m23
   let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06
-  if (!det) return m
+  if (!det) {
+    for (let i = 0; i < 16; i++) out[i] = m[i]
+    return out
+  }
   det = 1.0 / det
   out[0] = (m11 * b11 - m21 * b10 + m31 * b09) * det
   out[1] = (m20 * b10 - m10 * b11 - m30 * b09) * det
@@ -112,6 +208,10 @@ export function invertMatrix4(m) {
   out[14] = (m13 * b01 - m03 * b03 - m23 * b00) * det
   out[15] = (m02 * b03 - m12 * b01 + m22 * b00) * det
   return out
+}
+
+export function invertMatrix4(m) {
+  return invertMatrix4Into(new Float32Array(16), m)
 }
 
 export function mulQuat(a, b) {

@@ -19,18 +19,22 @@ const WARMUP = 2.5
 // Q value at which phase 1 ends and phase 2 (to the max) begins.
 const PHASE_SPLIT = 0.6
 
-// Integer quality params scaled through two-phase lerp.
+// Quality params scaled through two-phase lerp (integers unless float: true).
 // Priority order: cloud → shadow → fog/god rays (lowest).
 const QUALITY_PARAMS = S.isMobile
   ? [
       { key: "godRaySteps", min: 16, target: 32, targetAt: PHASE_SPLIT, max: 48 },
       { key: "cloudSteps", min: 6, target: 10, targetAt: 0.35, max: 20 },
       { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
+      { key: "mountainSteps", min: 24, target: 48, targetAt: PHASE_SPLIT, max: 48 },
+      { key: "shadowGrassDensity", min: 0.5, target: 1, targetAt: PHASE_SPLIT, max: 1, float: true },
     ]
   : [
       { key: "godRaySteps", min: 32, target: 48, targetAt: PHASE_SPLIT, max: 64 },
       { key: "cloudSteps", min: 6, target: 12, targetAt: 0.35, max: 32 },
       { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
+      { key: "mountainSteps", min: 32, target: 64, targetAt: PHASE_SPLIT, max: 64 },
+      { key: "shadowGrassDensity", min: 0.5, target: 1, targetAt: PHASE_SPLIT, max: 1, float: true },
     ]
 
 // Fog: analytical mode below FOG_VOL_MIN steps; hysteresis band prevents flickering.
@@ -47,6 +51,8 @@ export class AdaptiveQuality {
   #prevNow = null
   #fogEnabled = true
   #enabled = true
+  // Reused output object — apply() rewrites every key each frame.
+  #out = {}
 
   tick(nowMs) {
     if (!this.#enabled) return
@@ -93,14 +99,15 @@ export class AdaptiveQuality {
     if (!this.#enabled) return timeInfo
 
     const q = this.#q
-    const out = Object.assign({}, timeInfo)
+    const out = Object.assign(this.#out, timeInfo)
 
-    for (const { key, min, target, targetAt, max } of QUALITY_PARAMS) {
+    for (const { key, min, target, targetAt, max, float } of QUALITY_PARAMS) {
       if ((timeInfo[key] ?? 0) === 0) {
         out[key] = 0
         continue
       }
-      out[key] = Math.max(min, Math.round(this.#scaleParam(q, min, target, targetAt, max)))
+      const scaled = this.#scaleParam(q, min, target, targetAt, max)
+      out[key] = Math.max(min, float ? scaled : Math.round(scaled))
     }
 
     const fogRaw = q < 0.5 ? 0 : Math.round(this.#scaleParam(q, 0, FOG_TARGET, FOG_TARGET_AT, FOG_VOL_MAX))

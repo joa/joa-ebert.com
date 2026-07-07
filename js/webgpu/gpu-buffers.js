@@ -430,6 +430,14 @@ export function generateSSAOKernel(sampleCount) {
 // Render Targets
 // ##############
 
+// Bloom accumulates >1.0 in its additive up-chain, so it needs a float format.
+// rg11b10ufloat (when renderable) halves bandwidth vs rgba16float across the
+// whole extract/down/up chain; bloom never uses alpha or negative values.
+export function bloomChainFormat(device) {
+  if (S.isMobile) return "rgba8unorm"
+  return device.features.has("rg11b10ufloat-renderable") ? "rg11b10ufloat" : "rgba16float"
+}
+
 export function createRenderTargets(gpu, width, height) {
   const divisor = S.isMobile ? 4 : 2
   const hw = Math.max(1, Math.floor(width / divisor))
@@ -437,10 +445,12 @@ export function createRenderTargets(gpu, width, height) {
   // Mobile renders SSAO at half-res; temporal accumulation + linear upsample in
   // postprocess hide the resolution drop. Skip the blur target entirely (the blur
   // pass is also skipped on mobile — see Renderer#renderSSAOPass).
+  // Desktop stays at full-res: half-res SSAO + temporal history accumulates
+  // into horizontal scanlines (tried 2026-07-07, reverted — and the whole pass
+  // is only ~0.1 ms, so there is nothing worth saving here).
   const ssaoW = S.isMobile ? Math.max(1, Math.floor(width / 2)) : width
   const ssaoH = S.isMobile ? Math.max(1, Math.floor(height / 2)) : height
-  // Keep mobile bloom in 8-bit to reduce bandwidth across the extract/down/up chain.
-  const bloomFormat = S.isMobile ? "rgba8unorm" : "rgba16float"
+  const bloomFormat = bloomChainFormat(gpu.device)
   const makeRT = (w, h, fmt) => ({ texture: gpu.createRenderTarget(w, h, fmt), width: w, height: h })
 
   const bloomMips = []

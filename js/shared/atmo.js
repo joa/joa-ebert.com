@@ -14,7 +14,9 @@ function perez(cosTheta, gamma, cosGamma, A, B, C, D, E) {
   )
 }
 
-export function preethamPrecompute(T, sunDirY) {
+// Writes the 21 Preetham coefficients into `out` starting at floatOffset.
+// Allocation-free — this is the per-frame sky uniform path.
+export function preethamPrecomputeInto(out, floatOffset, T, sunDirY) {
   const sunTheta = Math.acos(Math.min(Math.max(sunDirY, 0.01), 1.0))
   const cosSunTheta = Math.max(sunDirY, 0.01)
   const T2 = T * T
@@ -49,53 +51,53 @@ export function preethamPrecompute(T, sunDirY) {
   const fY0 = perez(1.0, sunTheta, cosSunTheta, AY, BY, CY, DY, EY)
   const fx0 = perez(1.0, sunTheta, cosSunTheta, Ax, Bx, Cx, Dx, Ex)
   const fy0 = perez(1.0, sunTheta, cosSunTheta, Ay, By, Cy, Dy, Ey)
+  let o = floatOffset
+  out[o++] = pYz
+  out[o++] = pXz
+  out[o++] = pYzc
+  out[o++] = fY0
+  out[o++] = fx0
+  out[o++] = fy0
+  out[o++] = AY
+  out[o++] = BY
+  out[o++] = CY
+  out[o++] = DY
+  out[o++] = EY
+  out[o++] = Ax
+  out[o++] = Bx
+  out[o++] = Cx
+  out[o++] = Dx
+  out[o++] = Ex
+  out[o++] = Ay
+  out[o++] = By
+  out[o++] = Cy
+  out[o++] = Dy
+  out[o] = Ey
+  return out
+}
+
+export function preethamPrecompute(T, sunDirY) {
+  const a = preethamPrecomputeInto(new Float32Array(21), 0, T, sunDirY)
   return {
-    zenith: [pYz, pXz, pYzc],
-    fRef: [fY0, fx0, fy0],
-    aY: [AY, BY, CY, DY, EY],
-    ax: [Ax, Bx, Cx, Dx, Ex],
-    ay: [Ay, By, Cy, Dy, Ey],
+    zenith: [a[0], a[1], a[2]],
+    fRef: [a[3], a[4], a[5]],
+    aY: [a[6], a[7], a[8], a[9], a[10]],
+    ax: [a[11], a[12], a[13], a[14], a[15]],
+    ay: [a[16], a[17], a[18], a[19], a[20]],
   }
 }
 
-export function preethamPrecomputeArray(T, sunDirY) {
-  const { zenith, fRef, aY, ax, ay } = preethamPrecompute(T, sunDirY)
-
-  const [pYz, pXz, pYzc] = zenith
-  const [pFY0, pFx0, pFy0] = fRef
-  const [pAY, pBY, pCY, pDY, pEY] = aY
-  const [pAx, pBx, pCx, pDx, pEx] = ax
-  const [pAy, pBy, pCy, pDy, pEy] = ay
-
-  return new Float32Array([
-    pYz,
-    pXz,
-    pYzc,
-    pFY0,
-    pFx0,
-    pFy0,
-    pAY,
-    pBY,
-    pCY,
-    pDY,
-    pEY,
-    pAx,
-    pBx,
-    pCx,
-    pDx,
-    pEx,
-    pAy,
-    pBy,
-    pCy,
-    pDy,
-    pEy,
-  ])
-}
+// Module-scope scratch — computeAtmosphereSkyColorInto runs every frame and
+// must not allocate.
+const daySkyScratch = { r: 0, g: 0, b: 0 }
+const clearSkyScratch = { r: 0, g: 0, b: 0 }
+const castSkyScratch = { r: 0, g: 0, b: 0 }
 
 // Mirrors sky.frag atmosphere(): blends keyframed night colors ↔ Preetham day
 // colors using the same smoothstep on sun elevation. Samples at ~60° above
 // horizon (dir=[0, 0.87, 0.5] normalized) for a representative ambient color.
-export function computeAtmosphereSkyColor(timeInfo) {
+// Writes into `out` ({r,g,b}) and returns it.
+export function computeAtmosphereSkyColorInto(out, timeInfo) {
   const sun = timeInfo.sunPosition
   const sunElev = sun.y
   const zenith = timeInfo.zenithColor
@@ -106,12 +108,18 @@ export function computeAtmosphereSkyColor(timeInfo) {
   const nightG = horizon.g + (zenith.g - horizon.g) * t
   const nightB = horizon.b + (zenith.b - horizon.b) * t
 
-  if (sunElev <= -0.1) return { r: nightR, g: nightG, b: nightB }
+  if (sunElev <= -0.1) {
+    out.r = nightR
+    out.g = nightG
+    out.b = nightB
+    return out
+  }
 
   const dirY = 0.87,
     dirZ = 0.5
   const len = Math.sqrt(dirY * dirY + dirZ * dirZ)
-  const day = preethamSkyRGB(
+  const day = preethamSkyRGBInto(
+    daySkyScratch,
     0,
     dirY / len,
     dirZ / len,
@@ -124,14 +132,17 @@ export function computeAtmosphereSkyColor(timeInfo) {
   const raw = Math.max(0, Math.min(1, (sunElev + 0.1) / 0.25))
   const blend = smoothstep(raw)
 
-  return {
-    r: nightR + (day.r - nightR) * blend,
-    g: nightG + (day.g - nightG) * blend,
-    b: nightB + (day.b - nightB) * blend,
-  }
+  out.r = nightR + (day.r - nightR) * blend
+  out.g = nightG + (day.g - nightG) * blend
+  out.b = nightB + (day.b - nightB) * blend
+  return out
 }
 
-function preethamSkyRGB(dirX, dirY, dirZ, sunX, sunY, sunZ, T, overcast = 0.0) {
+export function computeAtmosphereSkyColor(timeInfo) {
+  return computeAtmosphereSkyColorInto({ r: 0, g: 0, b: 0 }, timeInfo)
+}
+
+function preethamSkyRGBInto(out, dirX, dirY, dirZ, sunX, sunY, sunZ, T, overcast = 0.0) {
   const sunTheta = Math.acos(Math.max(0.01, Math.min(1, sunY)))
   const cosTheta = Math.max(dirY, 0.01)
   const cosGamma = Math.max(-1, Math.min(1, dirX * sunX + dirY * sunY + dirZ * sunZ))
@@ -175,24 +186,22 @@ function preethamSkyRGB(dirX, dirY, dirZ, sunX, sunY, sunZ, T, overcast = 0.0) {
   const Y = (Yz * fY) / Math.max(fY0, 0.001)
   const x = (xz * fx) / Math.max(fx0, 0.001)
   const y = (yz * fy) / Math.max(fy0, 0.001)
-  const clear = xyYToRgb(x, y, Y)
+  const clear = xyYToRgbInto(clearSkyScratch, x, y, Y)
   const overcastY = Yz * ((1 + 2 * cosTheta) / 3)
-  const cast = xyYToRgb(xz, yz, overcastY)
+  const cast = xyYToRgbInto(castSkyScratch, xz, yz, overcastY)
   const t = Math.max(0, Math.min(1, overcast))
-  return {
-    r: clear.r + (cast.r - clear.r) * t,
-    g: clear.g + (cast.g - clear.g) * t,
-    b: clear.b + (cast.b - clear.b) * t,
-  }
+  out.r = clear.r + (cast.r - clear.r) * t
+  out.g = clear.g + (cast.g - clear.g) * t
+  out.b = clear.b + (cast.b - clear.b) * t
+  return out
 }
 
-function xyYToRgb(x, y, Y) {
+function xyYToRgbInto(out, x, y, Y) {
   const yInv = Y / Math.max(y, 0.001)
   const X = yInv * x
   const Z = yInv * (1 - x - y)
-  return {
-    r: Math.max(0, (3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z) * 0.0625),
-    g: Math.max(0, (-0.969266 * X + 1.8760108 * Y + 0.041556 * Z) * 0.0625),
-    b: Math.max(0, (0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z) * 0.0625),
-  }
+  out.r = Math.max(0, (3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z) * 0.0625)
+  out.g = Math.max(0, (-0.969266 * X + 1.8760108 * Y + 0.041556 * Z) * 0.0625)
+  out.b = Math.max(0, (0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z) * 0.0625)
+  return out
 }

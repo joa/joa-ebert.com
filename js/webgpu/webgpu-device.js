@@ -31,7 +31,10 @@ export class WebGPUDevice {
     this.features = this.adapter.features
     this.limits = this.adapter.limits
 
-    this.device = await this.adapter.requestDevice()
+    // Optional features: GPU pass timings for the perf HUD, and a compact
+    // HDR-ish bloom format (rg11b10ufloat) that halves bloom-chain bandwidth.
+    const requiredFeatures = ["timestamp-query", "rg11b10ufloat-renderable"].filter(f => this.adapter.features.has(f))
+    this.device = await this.adapter.requestDevice({ requiredFeatures })
 
     installErrorReporting(this.device)
 

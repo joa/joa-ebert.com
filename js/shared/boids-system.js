@@ -13,6 +13,17 @@ export const BIRD_ORBIT_SPEED = 1.08 // radians / second
 export const BIRD_ORBIT_TILT = 1.35 * Math.PI // radians: tilts the figure-8 plane off horizontal
 export const BIRD_MIN_ALTITUDE = 20 // hard floor
 
+// Uniform spatial hash for neighbor queries (Teschner et al. 2003, "Optimized
+// Spatial Hashing for Collision Detection of Deformable Objects"). Cell size is
+// the largest interaction radius, so all neighbors of a bird live in the 27
+// cells around it. ~2 buckets per bird keeps hash chains short.
+const HASH_SIZE = 1 << Math.ceil(Math.log2(BIRD_COUNT * 2))
+const HASH_MASK = HASH_SIZE - 1
+// Cell coords are packed (10 bits/axis, +512 offset) to disambiguate buckets
+// that different cells hash into — the flock never spans 1024 cells.
+const packCell = (x, y, z) => ((x + 512) & 1023) | (((y + 512) & 1023) << 10) | (((z + 512) & 1023) << 20)
+const hashCell = (x, y, z) => ((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) & HASH_MASK
+
 export class BoidsSystem {
   positions = new Float32Array(BIRD_COUNT * 3)
   velocities = new Float32Array(BIRD_COUNT * 3)
@@ -20,6 +31,13 @@ export class BoidsSystem {
   beatSpeeds = new Float32Array(BIRD_COUNT)
   #newVel = new Float32Array(BIRD_COUNT * 3)
   #orbitT = 0
+
+  // Spatial hash storage — rebuilt each frame via counting sort, no allocations.
+  #cellKey = new Int32Array(BIRD_COUNT)
+  #cellBucket = new Uint32Array(BIRD_COUNT)
+  #bucketStart = new Uint32Array(HASH_SIZE + 1)
+  #bucketCursor = new Uint32Array(HASH_SIZE)
+  #entries = new Uint32Array(BIRD_COUNT)
 
   constructor() {
     this.#init()
@@ -39,11 +57,28 @@ export class BoidsSystem {
     }
   }
 
-  #lemniscate(t) {
-    const sinT = Math.sin(t)
-    const cosT = Math.cos(t)
-    const denom = 1 + sinT * sinT
-    return [(BIRD_ORBIT_RADIUS * cosT) / denom, BIRD_MIN_ALTITUDE + (BIRD_ORBIT_RADIUS * sinT * cosT) / denom]
+  #rebuildGrid(invCell) {
+    const pos = this.positions
+    const start = this.#bucketStart
+    const cursor = this.#bucketCursor
+    start.fill(0)
+    for (let i = 0; i < BIRD_COUNT; i++) {
+      const i3 = i * 3
+      const ix = Math.floor(pos[i3] * invCell)
+      const iy = Math.floor(pos[i3 + 1] * invCell)
+      const iz = Math.floor(pos[i3 + 2] * invCell)
+      this.#cellKey[i] = packCell(ix, iy, iz)
+      const b = hashCell(ix, iy, iz)
+      this.#cellBucket[i] = b
+      start[b + 1]++
+    }
+    for (let b = 0; b < HASH_SIZE; b++) {
+      start[b + 1] += start[b]
+      cursor[b] = start[b]
+    }
+    for (let i = 0; i < BIRD_COUNT; i++) {
+      this.#entries[cursor[this.#cellBucket[i]]++] = i
+    }
   }
 
   update(dt, cameraPos, lookAt, timeInfo, mouseRay = null) {
@@ -56,16 +91,24 @@ export class BoidsSystem {
     const cx = cameraPos[0] + (lx / ll) * BIRD_ORBIT_DISTANCE
     const cy = cameraPos[1] + (ly / ll) * BIRD_ORBIT_DISTANCE
     const cz = cameraPos[2] + (lz / ll) * BIRD_ORBIT_DISTANCE
-    const [ox, oy] = this.#lemniscate(this.#orbitT)
+    // Lemniscate attractor position for the current orbit phase
+    const sinT = Math.sin(this.#orbitT)
+    const cosT = Math.cos(this.#orbitT)
+    const denom = 1 + sinT * sinT
+    const ox = (BIRD_ORBIT_RADIUS * cosT) / denom
+    const oy = BIRD_MIN_ALTITUDE + (BIRD_ORBIT_RADIUS * sinT * cosT) / denom
     const tilt = BIRD_ORBIT_TILT
     const targetX = cx + ox
     const targetY = cy - oy * Math.sin(tilt)
     const targetZ = cz + oy * Math.cos(tilt)
     const maxSpeed = timeInfo.birdMaxSpeed ?? 8.0
     const maxForce = timeInfo.birdMaxForce ?? 3.0
-    const sepR2 = (timeInfo.birdSeparationRadius ?? 3.5) ** 2
-    const aliR2 = (timeInfo.birdAlignmentRadius ?? 6.0) ** 2
-    const cohR2 = (timeInfo.birdCohesionRadius ?? 5.0) ** 2
+    const sepR = timeInfo.birdSeparationRadius ?? 3.5
+    const aliR = timeInfo.birdAlignmentRadius ?? 6.0
+    const cohR = timeInfo.birdCohesionRadius ?? 5.0
+    const sepR2 = sepR * sepR
+    const aliR2 = aliR * aliR
+    const cohR2 = cohR * cohR
     const sepW = timeInfo.birdSeparationWeight ?? 1.5
     const aliW = timeInfo.birdAlignmentWeight ?? 1.0
     const cohW = timeInfo.birdCohesionWeight ?? 0.8
@@ -74,6 +117,13 @@ export class BoidsSystem {
     const pos = this.positions
     const vel = this.velocities
     const newVel = this.#newVel
+
+    // All interaction radii fit inside one cell, so 27 cells cover every neighbor.
+    const invCell = 1 / Math.max(sepR, aliR, cohR)
+    this.#rebuildGrid(invCell)
+    const start = this.#bucketStart
+    const entries = this.#entries
+    const cellKey = this.#cellKey
 
     for (let i = 0; i < BIRD_COUNT; i++) {
       const i3 = i * 3
@@ -95,36 +145,54 @@ export class BoidsSystem {
         cohY = 0,
         cohZ = 0,
         cohCount = 0
-      for (let j = 0; j < BIRD_COUNT; j++) {
-        if (i === j) continue
-        const j3 = j * 3
-        const dx = px - pos[j3],
-          dy = py - pos[j3 + 1],
-          dz = pz - pos[j3 + 2]
-        const d2 = dx * dx + dy * dy + dz * dz
-        if (d2 < 0.0001) continue
-        const inSep = d2 < sepR2,
-          inAli = d2 < aliR2,
-          inCoh = d2 < cohR2
-        if (!inSep && !inAli && !inCoh) continue
-        const inv = 1 / Math.sqrt(d2)
-        if (inSep) {
-          sepX += dx * inv
-          sepY += dy * inv
-          sepZ += dz * inv
-          sepCount++
-        }
-        if (inAli) {
-          aliX += vel[j3]
-          aliY += vel[j3 + 1]
-          aliZ += vel[j3 + 2]
-          aliCount++
-        }
-        if (inCoh) {
-          cohX += pos[j3]
-          cohY += pos[j3 + 1]
-          cohZ += pos[j3 + 2]
-          cohCount++
+      const cix = Math.floor(px * invCell)
+      const ciy = Math.floor(py * invCell)
+      const ciz = Math.floor(pz * invCell)
+      for (let ndz = -1; ndz <= 1; ndz++) {
+        for (let ndy = -1; ndy <= 1; ndy++) {
+          for (let ndx = -1; ndx <= 1; ndx++) {
+            const nx = cix + ndx,
+              ny = ciy + ndy,
+              nz = ciz + ndz
+            const key = packCell(nx, ny, nz)
+            const bucket = hashCell(nx, ny, nz)
+            const end = start[bucket + 1]
+            for (let e = start[bucket]; e < end; e++) {
+              const j = entries[e]
+              // A bucket may hold several cells (hash collisions) — filter to
+              // the queried cell so no neighbor is counted twice.
+              if (cellKey[j] !== key || j === i) continue
+              const j3 = j * 3
+              const dx = px - pos[j3],
+                dy = py - pos[j3 + 1],
+                dz = pz - pos[j3 + 2]
+              const d2 = dx * dx + dy * dy + dz * dz
+              if (d2 < 0.0001) continue
+              const inSep = d2 < sepR2,
+                inAli = d2 < aliR2,
+                inCoh = d2 < cohR2
+              if (!inSep && !inAli && !inCoh) continue
+              const inv = 1 / Math.sqrt(d2)
+              if (inSep) {
+                sepX += dx * inv
+                sepY += dy * inv
+                sepZ += dz * inv
+                sepCount++
+              }
+              if (inAli) {
+                aliX += vel[j3]
+                aliY += vel[j3 + 1]
+                aliZ += vel[j3 + 2]
+                aliCount++
+              }
+              if (inCoh) {
+                cohX += pos[j3]
+                cohY += pos[j3 + 1]
+                cohZ += pos[j3 + 2]
+                cohCount++
+              }
+            }
+          }
         }
       }
 

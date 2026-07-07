@@ -54,7 +54,7 @@ struct SkyUniforms {
   pAY: f32, pBY: f32, pCY: f32, pDY: f32, pEY: f32,
   pAx: f32, pBx: f32, pCx: f32, pDx: f32, pEx: f32,
   pAy: f32, pBy: f32, pCy: f32, pDy: f32, pEy: f32,
-  pad2: f32,
+  mountainSteps: u32,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -489,9 +489,11 @@ fn renderMountains(ro: vec3f, rd: vec3f, sunDir: vec3f) -> vec4f {
 
   let T_NEAR: f32 = 500.0;
   let T_FAR: f32 = 8000.0;
-  let STEPS: i32 = 64;
+  let STEPS: i32 = i32(sky.mountainSteps);
   // Exponential step distribution — dense near T_NEAR, coarse near T_FAR.
-  // stepMult = (T_FAR / T_NEAR) ^ (1 / STEPS) ≈ 1.044
+  // stepMult = (T_FAR / T_NEAR) ^ (1 / STEPS) ≈ 1.044 at the default 64 steps.
+  // The 8-iteration binary refinement below keeps the hit surface accurate even
+  // at coarse step counts; only thin-ridge silhouettes degrade.
   let stepMult = pow(T_FAR / T_NEAR, 1.0 / f32(STEPS));
 
   var t: f32 = T_NEAR;
@@ -633,6 +635,16 @@ fn renderChemtrails(dir: vec3f, sunUp: f32) -> vec3f {
 @fragment
 fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
   let dir = normalize(input.rayDir);
+
+  // Mountains are opaque (alpha exactly 0 or 1) and composited last, fully
+  // replacing everything behind them — march them first so covered pixels skip
+  // the stars, chemtrails, and the far more expensive cloud march entirely.
+  // Output is bit-identical to compositing mountains after the other layers.
+  let mountains = renderMountains(frame.cameraPosition, dir, frame.sunDirection);
+  if (mountains.a == 1.0) {
+    return vec4f(clamp(mountains.rgb, vec3f(0.0), vec3f(1.5)), 1.0);
+  }
+
   var color = atmosphere(dir);
 
   let sunUp = max(frame.sunDirection.y, 0.0);
@@ -662,10 +674,6 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
   // Volumetric clouds
   let clouds = renderClouds(frame.cameraPosition, dir, frame.sunDirection, frame.sunDirection.y, input.texCoord);
   color = mix(color, clouds.rgb, clouds.a);
-
-  // Mountains
-  let mountains = renderMountains(frame.cameraPosition, dir, frame.sunDirection);
-  color = mix(color, mountains.rgb, mountains.a);
 
   return vec4f(clamp(color, vec3f(0.0), vec3f(1.5)), 1.0);
 }

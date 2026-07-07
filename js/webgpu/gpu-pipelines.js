@@ -7,6 +7,7 @@
 
 import SHADERS from "wgsl-shaders-bundle.js"
 import S from "../shared/settings.js"
+import { bloomChainFormat } from "./gpu-buffers.js"
 
 // Visibility shorthand
 // ####################
@@ -559,7 +560,7 @@ export function createAllPipelines(device, presentationFormat) {
   // Bloom Extract
   // #############
 
-  const bloomFormat = S.isMobile ? "rgba8unorm" : "rgba16float"
+  const bloomFormat = bloomChainFormat(device)
 
   passLayouts.bloomExtract = device.createBindGroupLayout({
     label: "bloom extract pass",

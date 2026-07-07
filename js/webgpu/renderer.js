@@ -15,22 +15,26 @@ import { BoidsSystem } from "../shared/boids-system.js"
 import { EffectsSystem } from "../shared/effects.js"
 import { AdaptiveQuality } from "../shared/adaptive-quality.js"
 import { CameraAnimator, PATH } from "../shared/camera-animator.js"
-import { computeAtmosphereSkyColor, preethamPrecomputeArray as preethamPrecompute } from "../shared/atmo.js"
+import { computeAtmosphereSkyColorInto, preethamPrecomputeInto } from "../shared/atmo.js"
 export { PATH }
 import {
   perspectiveMatrixWebGPU,
   invertMatrix4,
-  normalize,
+  invertMatrix4Into,
+  normalizeInto,
   smoothstep,
-  lookAtMatrix,
-  orthographicMatrixWebGPU,
+  lookAtMatrixInto,
+  orthographicMatrixWebGPUInto,
   multiplyMM,
-  multiplyMV,
+  multiplyMMInto,
+  multiplyMVInto,
 } from "../shared/math-utils.js"
 import S from "../shared/settings.js"
 import moonPhase from "../shared/moon.js"
 import {
   AREA_SIZE,
+  BLADES_SPARSE,
+  BLADES_DENSE,
   BLOOM_LEVELS,
   SHADOWMAP_SIZE,
   TILE_SIZE,
@@ -52,6 +56,8 @@ import {
   createRenderTargets,
 } from "./gpu-buffers.js"
 import { GPUHeightmap, GrassTileWorker, writeFrameUniforms, updateBirdInstances } from "./gpu-updates.js"
+import { GpuProfiler } from "./gpu-profiler.js"
+import { GrassCuller } from "./grass-culler.js"
 import {
   createAllPipelines,
   createPassBindGroups,
@@ -173,6 +179,7 @@ export class Renderer {
   #gpuFramePending = false
   #capturePending = false
   #debugMode = parseDebugMode()
+  #profiler = null
 
   // Pipelines & bind-group layouts
   // ##############################
@@ -267,6 +274,21 @@ export class Renderer {
   #sunScreenPos = [0, 0]
   #prevViewProjection = null
 
+  // Per-frame matrix/vector scratch — the render loop must not allocate.
+  #invView = new Float32Array(16)
+  #viewProj = new Float32Array(16)
+  #invViewProj = new Float32Array(16)
+  #lightView = new Float32Array(16)
+  #lightOrtho = new Float32Array(16)
+  #lightSpace = new Float32Array(16)
+  #cornerView = new Float32Array(4)
+  #cornerLight = new Float32Array(4)
+  #rayView = new Float32Array(4)
+  #rayWorld = new Float32Array(4)
+  #sunClip = new Float32Array(4)
+  #primaryDir = new Float32Array(3)
+  #mouseRay = { ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: 0 }
+
   // Temporal / throttling state
   // ###########################
   #lightingFrame = 0
@@ -278,6 +300,11 @@ export class Renderer {
   #tileBaseX = Number.NaN
   #tileBaseZ = Number.NaN
   #grassTileWorker = new GrassTileWorker()
+
+  // Grass frustum culling — one culler per clip volume (camera and shadow light)
+  #viewCuller = new GrassCuller()
+  #shadowCuller = new GrassCuller()
+  #grassCullingEnabled = false
 
   // Calendar event modules — populated in init(), empty array outside active date ranges
   #eventModules = []
@@ -372,6 +399,8 @@ export class Renderer {
     ctx.linearClamp = gpu.linearClamp
     ctx.linearRepeat = gpu.linearRepeat
     ctx.nearestClamp = gpu.nearestClamp
+
+    if (S.perfHud) this.#profiler = new GpuProfiler(gpu.device)
 
     this.#resize()
     let resizeTimer = null
@@ -755,10 +784,19 @@ export class Renderer {
     if (sun[1] <= 0.05) return null
     const [cx, cy, cz] = ctx.cameraPosition
     const lightDist = 80
-    const eye = [cx + sun[0] * lightDist, cy + sun[1] * lightDist, cz + sun[2] * lightDist]
-    const target = [cx, 0, cz]
-    const up = Math.abs(sun[1]) > 0.98 ? [1, 0, 0] : [0, 1, 0]
-    const lightView = lookAtMatrix(eye, target, up)
+    const nearVertical = Math.abs(sun[1]) > 0.98
+    const lightView = lookAtMatrixInto(
+      this.#lightView,
+      cx + sun[0] * lightDist,
+      cy + sun[1] * lightDist,
+      cz + sun[2] * lightDist,
+      cx,
+      0,
+      cz,
+      nearVertical ? 1 : 0,
+      nearVertical ? 0 : 1,
+      0
+    )
 
     const tanH = Math.tan(ctx.fov / 2)
     const aspect = ctx.aspect
@@ -774,7 +812,8 @@ export class Renderer {
       const z = depth === 0 ? nZ : fZ
       const h = z * tanH
       const w = h * aspect
-      const lc = multiplyMV(lightView, multiplyMV(ctx.invViewMatrix, [sX * w, sY * h, -z, 1]))
+      const cv = multiplyMVInto(this.#cornerView, ctx.invViewMatrix, sX * w, sY * h, -z, 1)
+      const lc = multiplyMVInto(this.#cornerLight, lightView, cv[0], cv[1], cv[2], cv[3])
       if (lc[0] < minX) minX = lc[0]
       if (lc[0] > maxX) maxX = lc[0]
       if (lc[1] < minY) minY = lc[1]
@@ -799,26 +838,44 @@ export class Renderer {
 
     const near = Math.max(-maxZ, 0.1)
     const far = Math.max(-minZ + 5.0, near + 1.0)
-    return multiplyMM(orthographicMatrixWebGPU(minX, maxX, minY, maxY, near, far), lightView)
+    return multiplyMMInto(
+      this.#lightSpace,
+      orthographicMatrixWebGPUInto(this.#lightOrtho, minX, maxX, minY, maxY, near, far),
+      lightView
+    )
   }
 
   #sampleGround(x, z) {
     return this.#groundHeightmap.ready ? this.#groundHeightmap.sampleBilinear(x, z, 1) : 0
   }
 
-  // Mouse ray in world space, or null if view matrices aren't ready.
+  // Mouse ray in world space (reused object), or null if view matrices aren't ready.
   #computeMouseRay(ctx) {
     if (!ctx.invProjectionMatrix || !ctx.invViewMatrix) return null
     const [ndcX, ndcY] = this.#mouseNDC
-    const farView = multiplyMV(ctx.invProjectionMatrix, [ndcX, ndcY, 1, 1])
+    const farView = multiplyMVInto(this.#rayView, ctx.invProjectionMatrix, ndcX, ndcY, 1, 1)
     const invW = 1 / farView[3]
-    const farWorld = multiplyMV(ctx.invViewMatrix, [farView[0] * invW, farView[1] * invW, farView[2] * invW, 1])
+    const farWorld = multiplyMVInto(
+      this.#rayWorld,
+      ctx.invViewMatrix,
+      farView[0] * invW,
+      farView[1] * invW,
+      farView[2] * invW,
+      1
+    )
     const [ox, oy, oz] = ctx.cameraPosition
     const dx = farWorld[0] - ox,
       dy = farWorld[1] - oy,
       dz = farWorld[2] - oz
     const invLen = 1 / (Math.hypot(dx, dy, dz) || 1)
-    return { ox, oy, oz, dx: dx * invLen, dy: dy * invLen, dz: dz * invLen }
+    const ray = this.#mouseRay
+    ray.ox = ox
+    ray.oy = oy
+    ray.oz = oz
+    ray.dx = dx * invLen
+    ray.dy = dy * invLen
+    ray.dz = dz * invLen
+    return ray
   }
 
   // Project the sun into screen space. sunScreenRaw is used by god rays (no
@@ -828,7 +885,7 @@ export class Renderer {
     const [ex, ey, ez] = ctx.cameraPosition
     const [sx, sy, sz] = ctx.sunDirection
     const d = SUN_PROJECTION_WU
-    const clip = multiplyMV(ctx.viewProjectionMatrix, [ex + sx * d, ey + sy * d, ez + sz * d, 1])
+    const clip = multiplyMVInto(this.#sunClip, ctx.viewProjectionMatrix, ex + sx * d, ey + sy * d, ez + sz * d, 1)
     const w = clip[3]
     const x = (clip[0] / w) * 0.5 + 0.5
     const y = 0.5 - (clip[1] / w) * 0.5
@@ -968,7 +1025,9 @@ export class Renderer {
     f[18] = timeInfo.overcast + rain * 0.5
     // Preetham coefficients at float offset 20 (byte 80)
     const sunDirY = ctx.sunDirection ? ctx.sunDirection[1] : 0.5
-    f.set(preethamPrecompute(f[17], sunDirY), 20)
+    preethamPrecomputeInto(f, 20, f[17], sunDirY)
+    // mountainSteps at byte 164 (float offset 41, after the 21 Preetham floats)
+    dv.setUint32(164, Math.round(timeInfo.mountainSteps ?? 64), true)
     ctx.queue.writeBuffer(this.#skyUniformBuffer, 0, buf)
   }
 
@@ -1061,9 +1120,10 @@ export class Renderer {
   }
 
   // Fullscreen draw into a wrapped render target (.texture, .width, .height, .view).
-  #fullscreenTarget(encoder, target, pipeline, bg0, bg1, clearValue = CLEAR_BLACK, loadOp = "clear") {
+  #fullscreenTarget(encoder, target, pipeline, bg0, bg1, clearValue = CLEAR_BLACK, loadOp = "clear", timestampWrites) {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: target.view, clearValue, loadOp, storeOp: "store" }],
+      timestampWrites,
     })
     pass.setViewport(0, 0, target.width, target.height, 0, 1)
     pass.setPipeline(pipeline)
@@ -1075,6 +1135,27 @@ export class Renderer {
 
   // Render passes
   // #############
+
+  // Instance buffers are tile-contiguous, so a run of visible tile slots maps to
+  // one ranged drawIndexed via firstInstance. density < 1 draws a prefix of each
+  // tile's blades — blades are randomly attributed within a tile, so a per-tile
+  // prefix is an unbiased density cut (a per-run prefix would empty trailing tiles).
+  #drawGrassRanges(pass, indexCount, bladeCount, ranges, rangeCount, density = 1) {
+    if (density >= 1) {
+      for (let r = 0; r < rangeCount; r++) {
+        pass.drawIndexed(indexCount, ranges[r * 2 + 1] * bladeCount, 0, 0, ranges[r * 2] * bladeCount)
+      }
+      return
+    }
+    const bladesPerTile = Math.max(1, Math.round(bladeCount * density))
+    for (let r = 0; r < rangeCount; r++) {
+      const firstSlot = ranges[r * 2]
+      const slotRun = ranges[r * 2 + 1]
+      for (let t = 0; t < slotRun; t++) {
+        pass.drawIndexed(indexCount, bladesPerTile, 0, 0, (firstSlot + t) * bladeCount)
+      }
+    }
+  }
 
   #renderShadowPass(encoder, ctx) {
     if (!ctx.lightSpaceMatrix) return
@@ -1088,6 +1169,7 @@ export class Renderer {
         depthLoadOp: "clear",
         depthStoreOp: "store",
       },
+      timestampWrites: this.#profiler?.pass("shadow"),
     })
     pass.setViewport(0, 0, SHADOWMAP_SIZE, SHADOWMAP_SIZE, 0, 1)
     pass.setPipeline(this.#pipelines.shadow)
@@ -1098,10 +1180,29 @@ export class Renderer {
     pass.setIndexBuffer(grass.bladeIndices, "uint16")
     pass.setVertexBuffer(2, grass.denseDynamic)
     pass.setVertexBuffer(3, grass.denseAttribs)
-    pass.drawIndexed(grass.bladeIndexCount, grass.denseGrassCount)
+    const culler = this.#grassCullingEnabled ? this.#shadowCuller : null
+    if (culler) {
+      this.#drawGrassRanges(pass, grass.bladeIndexCount, BLADES_DENSE, culler.denseRanges, culler.denseRangeCount)
+    } else {
+      pass.drawIndexed(grass.bladeIndexCount, grass.denseGrassCount)
+    }
     pass.setVertexBuffer(2, grass.sparseDynamic)
     pass.setVertexBuffer(3, grass.sparseAttribs)
-    pass.drawIndexed(grass.bladeIndexCount, grass.grassCount)
+    if (culler) {
+      // Distant sparse blades are sub-texel in the shadow map — adaptive quality
+      // thins them via shadowGrassDensity without visible shadow change.
+      const density = ctx.timeInfo?.shadowGrassDensity ?? 1
+      this.#drawGrassRanges(
+        pass,
+        grass.bladeIndexCount,
+        BLADES_SPARSE,
+        culler.sparseRanges,
+        culler.sparseRangeCount,
+        density
+      )
+    } else {
+      pass.drawIndexed(grass.bladeIndexCount, grass.grassCount)
+    }
     if (this.#textBuffers && this.#textModelMatrix) {
       pass.setPipeline(this.#pipelines.shadowText)
       pass.setBindGroup(1, this.#emptyBindGroup)
@@ -1127,6 +1228,7 @@ export class Renderer {
         depthLoadOp: "clear",
         depthStoreOp: "store",
       },
+      timestampWrites: this.#profiler?.pass("gbuffer"),
     })
     pass.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
 
@@ -1141,11 +1243,20 @@ export class Renderer {
       pass.setVertexBuffer(2, grass.denseDynamic)
       pass.setVertexBuffer(3, grass.denseAttribs)
       pass.setVertexBuffer(4, grass.denseNoise)
-      pass.drawIndexed(grass.bladeIndexCount, grass.denseGrassCount)
+      const culler = this.#grassCullingEnabled ? this.#viewCuller : null
+      if (culler) {
+        this.#drawGrassRanges(pass, grass.bladeIndexCount, BLADES_DENSE, culler.denseRanges, culler.denseRangeCount)
+      } else {
+        pass.drawIndexed(grass.bladeIndexCount, grass.denseGrassCount)
+      }
       pass.setVertexBuffer(2, grass.sparseDynamic)
       pass.setVertexBuffer(3, grass.sparseAttribs)
       pass.setVertexBuffer(4, grass.sparseNoise)
-      pass.drawIndexed(grass.bladeIndexCount, grass.grassCount)
+      if (culler) {
+        this.#drawGrassRanges(pass, grass.bladeIndexCount, BLADES_SPARSE, culler.sparseRanges, culler.sparseRangeCount)
+      } else {
+        pass.drawIndexed(grass.bladeIndexCount, grass.grassCount)
+      }
     }
 
     const ground = this.#groundBuffers
@@ -1199,6 +1310,7 @@ export class Renderer {
 
     const deferred = encoder.beginRenderPass({
       colorAttachments: [{ view: sceneView, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" }],
+      timestampWrites: this.#profiler?.pass("deferred"),
     })
     deferred.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
     deferred.setBindGroup(0, this.#frameBindGroup)
@@ -1217,6 +1329,7 @@ export class Renderer {
       const forward = encoder.beginRenderPass({
         colorAttachments: [{ view: sceneView, loadOp: "load", storeOp: "store" }],
         depthStencilAttachment: { view: ctx.depthView, depthLoadOp: "load", depthStoreOp: "store" },
+        timestampWrites: this.#profiler?.pass("forward"),
       })
       forward.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
       forward.setBindGroup(0, this.#frameBindGroup)
@@ -1297,6 +1410,8 @@ export class Renderer {
   // running half-res with no history avoids needing to rebuild the postprocess
   // bind group every frame to track the ping-pong target, and the per-pixel jitter
   // plus linear upsample in postprocess keeps noise acceptable.
+  // Desktop runs FULL-res with temporal history — do not move this to half-res;
+  // half-res + reprojected history produces horizontal scanlines (2026-07-07).
   #renderSSAOPass(encoder, ctx) {
     const rt = this.#renderTargets
     if (!rt || !this.#ssaoBgs) return
@@ -1305,22 +1420,27 @@ export class Renderer {
     ctx.queue.writeBuffer(this.#ssaoUniformBuffer, 0, this.#ssaoData)
 
     const ssaoTarget = idx === 0 ? rt.ssao : rt.ssaoPrev
+    const hasBlur = !S.isMobile
     this.#fullscreenTarget(
       encoder,
       ssaoTarget,
       this.#pipelines.ssao,
       this.#frameBindGroup,
       this.#ssaoBgs[idx],
-      CLEAR_WHITE
+      CLEAR_WHITE,
+      "clear",
+      hasBlur ? this.#profiler?.spanBegin("ssao") : this.#profiler?.pass("ssao")
     )
-    if (!S.isMobile) {
+    if (hasBlur) {
       this.#fullscreenTarget(
         encoder,
         rt.ssaoBlur,
         this.#pipelines.ssaoBlur,
         this.#frameBindGroup,
         this.#ssaoBlurBgs[idx],
-        CLEAR_WHITE
+        CLEAR_WHITE,
+        "clear",
+        this.#profiler?.spanEnd("ssao")
       )
     }
     this.#ssaoFrame++
@@ -1335,7 +1455,16 @@ export class Renderer {
     this.#bloomExtractData[0] = timeInfo.bloomThreshold
     ctx.queue.writeBuffer(this.#bloomExtractUniformBuffer, 0, this.#bloomExtractData)
 
-    this.#fullscreenTarget(encoder, rt.bloomExtract, this.#pipelines.bloomExtract, empty, this.#bloomExtractBg)
+    this.#fullscreenTarget(
+      encoder,
+      rt.bloomExtract,
+      this.#pipelines.bloomExtract,
+      empty,
+      this.#bloomExtractBg,
+      CLEAR_BLACK,
+      "clear",
+      this.#profiler?.spanBegin("bloom")
+    )
     for (let i = 0; i < BLOOM_LEVELS; i++) {
       this.#fullscreenTarget(encoder, rt.bloomMips[i], this.#pipelines.bloomDown, empty, this.#bloomDownBgs[i])
     }
@@ -1347,7 +1476,8 @@ export class Renderer {
         empty,
         this.#bloomUpBgs[i],
         CLEAR_BLACK,
-        "load"
+        "load",
+        i === BLOOM_LEVELS - 1 ? this.#profiler?.spanEnd("bloom") : undefined
       )
     }
   }
@@ -1355,12 +1485,22 @@ export class Renderer {
   #renderGodRaysPass(encoder, ctx, timeInfo) {
     const rt = this.#renderTargets
     if (!rt || !this.#godRayBg || timeInfo.godRaySteps < 1) return
-    this.#fullscreenTarget(encoder, rt.godRay, this.#pipelines.godrays, this.#frameBindGroup, this.#godRayBg)
+    this.#fullscreenTarget(
+      encoder,
+      rt.godRay,
+      this.#pipelines.godrays,
+      this.#frameBindGroup,
+      this.#godRayBg,
+      CLEAR_BLACK,
+      "clear",
+      this.#profiler?.pass("godrays")
+    )
   }
 
   #renderPostProcessPass(encoder, canvasView) {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: canvasView, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" }],
+      timestampWrites: this.#profiler?.pass("postprocess"),
     })
     pass.setPipeline(this.#pipelines.postprocess)
     pass.setBindGroup(0, this.#frameBindGroup)
@@ -1396,16 +1536,23 @@ export class Renderer {
     }
     ctx.timeInfo = timeInfo
 
-    // Sun / moon / primary light blend
-    ctx.skyColor = computeAtmosphereSkyColor(timeInfo)
-    ctx.sunDirection = normalize([timeInfo.sunPosition.x, timeInfo.sunPosition.y, timeInfo.sunPosition.z])
+    // Sun / moon / primary light blend — all written into stable ctx slots
+    computeAtmosphereSkyColorInto(ctx.skyColor, timeInfo)
+    normalizeInto(ctx.sunDirection, timeInfo.sunPosition.x, timeInfo.sunPosition.y, timeInfo.sunPosition.z)
     const blend = smoothstep(Math.max(0, Math.min(1, timeInfo.sunPosition.y / 0.05)))
     const inv = 1 - blend
     const sp = timeInfo.sunPosition
     const mp = timeInfo.moonPosition
-    const [px, py, pz] = normalize([sp.x * blend + mp.x * inv, sp.y * blend + mp.y * inv, sp.z * blend + mp.z * inv])
+    const pd = normalizeInto(
+      this.#primaryDir,
+      sp.x * blend + mp.x * inv,
+      sp.y * blend + mp.y * inv,
+      sp.z * blend + mp.z * inv
+    )
     ctx.sunBlend = blend
-    ctx.primaryLightDir = { x: px, y: py, z: pz }
+    ctx.primaryLightDir.x = pd[0]
+    ctx.primaryLightDir.y = pd[1]
+    ctx.primaryLightDir.z = pd[2]
     ctx.primaryLightStrength = blend + inv * 0.15
     ctx.fireflyFactor = computeFireflyFactor(timeInfo)
 
@@ -1429,14 +1576,24 @@ export class Renderer {
     this.cameraAnimator?.update(ctx.deltaTime * MS_TO_SEC)
 
     // View matrices + derivatives
+    this.#profiler?.cpuBegin("matrices")
     ctx.viewMatrix = this.camera.getViewMatrix(timeInfo)
-    ctx.invViewMatrix = invertMatrix4(ctx.viewMatrix)
-    ctx.viewProjectionMatrix = multiplyMM(ctx.projectionMatrix, ctx.viewMatrix)
-    ctx.invViewProjectionMatrix = multiplyMM(ctx.invViewMatrix, ctx.invProjectionMatrix)
+    ctx.invViewMatrix = invertMatrix4Into(this.#invView, ctx.viewMatrix)
+    ctx.viewProjectionMatrix = multiplyMMInto(this.#viewProj, ctx.projectionMatrix, ctx.viewMatrix)
+    ctx.invViewProjectionMatrix = multiplyMMInto(this.#invViewProj, ctx.invViewMatrix, ctx.invProjectionMatrix)
     ctx.lightSpaceMatrix = this.#computeLightSpaceMatrix(ctx)
+    this.#profiler?.cpuEnd("matrices")
 
     this.windSystem.update(ctx.deltaTime, timeInfo)
     this.#updateGrassTileAnchors(ctx)
+
+    // Per-tile grass frustum culling → merged instance ranges for the draws.
+    this.#grassCullingEnabled = (timeInfo.grassCulling ?? 1) > 0.5 && !!this.#grassBuffers
+    if (this.#grassCullingEnabled) {
+      const heightFactor = timeInfo.grassHeightFactor ?? 1
+      this.#viewCuller.cull(ctx.viewProjectionMatrix, this.#grassBuffers, heightFactor)
+      if (ctx.lightSpaceMatrix) this.#shadowCuller.cull(ctx.lightSpaceMatrix, this.#grassBuffers, heightFactor)
+    }
 
     const mouseRay = this.#computeMouseRay(ctx)
     this.#updateCursorWorldPos(ctx, mouseRay)
@@ -1478,10 +1635,13 @@ export class Renderer {
     }
 
     // Per-subsystem uniform writes
+    this.#profiler?.cpuBegin("uniforms")
     this.#writeGrassUniforms(ctx, timeInfo)
     if (this.boidsSystem && this.#birdBuffers) {
+      this.#profiler?.cpuBegin("boids")
       this.boidsSystem.update(ctx.deltaTime, ctx.cameraPosition, ctx.lookAt, timeInfo, mouseRay)
       updateBirdInstances(ctx.queue, this.#birdBuffers, this.boidsSystem)
+      this.#profiler?.cpuEnd("boids")
       this.#writeBirdUniforms(ctx, timeInfo)
     }
     this.#writeDeferredLightingUniforms(ctx, timeInfo)
@@ -1492,6 +1652,7 @@ export class Renderer {
     this.#writeGodRayUniforms(ctx, timeInfo)
     this.#writeFogUniforms(ctx, timeInfo)
     this.#writePostProcessUniforms(ctx, timeInfo)
+    this.#profiler?.cpuEnd("uniforms")
 
     // Acquire canvas texture. On iOS presentation can transiently fail — bail and retry.
     let canvasTexture
@@ -1504,7 +1665,9 @@ export class Renderer {
 
     if (this.#grassBuffers) this.#grassTileWorker.flush(ctx.queue, this.#grassBuffers)
 
+    this.#profiler?.cpuBegin("encode")
     withErrorScopes(ctx.device, "frame", () => this.#encodeFrame(ctx, timeInfo, canvasTexture))
+    this.#profiler?.cpuEnd("encode")
 
     if (S.isTBDR && ctx.queue.onSubmittedWorkDone) {
       this.#gpuFramePending = true
@@ -1536,6 +1699,7 @@ export class Renderer {
   }
 
   #encodeFrame(ctx, timeInfo, canvasTexture) {
+    this.#profiler?.beginFrame()
     const encoder = ctx.device.createCommandEncoder()
 
     if (this.#cloudShadowThisFrame) {
@@ -1581,8 +1745,10 @@ export class Renderer {
         .end()
     }
 
+    this.#profiler?.endFrame(encoder)
     try {
       ctx.queue.submit([encoder.finish()])
+      this.#profiler?.readback()
     } catch (error) {
       reportError("submit", error)
     }
