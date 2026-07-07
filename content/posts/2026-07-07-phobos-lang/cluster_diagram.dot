@@ -1,0 +1,172 @@
+digraph phobos_execution {
+  rankdir=LR;
+  newrank=true;
+  compound=true;
+  splines=spline;
+  //nodesep=0.35;
+  ranksep=0.7;
+  bgcolor="white";
+  fontname="Helvetica";
+  labelloc="b";
+  fontsize=16;
+  label=<<b>Phobos: task-DAG distributed execution</b>>;
+
+  node  [fontname="Helvetica", fontsize=11, style="filled", penwidth=1.2];
+  edge  [fontname="Helvetica", fontsize=9];
+
+  storage [shape=cylinder, fillcolor="#cfe3f5", color="#3d72a8", penwidth=1.4,
+           width=1.15, height=1.5, fixedsize=true,
+           label="durable\nstorage\nfile://\n\nA  B  C"];
+
+  subgraph cluster_sched {
+    label=<<b>phobos-sched</b> central controller>;
+    style="rounded,filled"; fillcolor="#fff7e6"; color="#d9a441"; fontsize=12;
+
+    node [shape=circle, fillcolor="#ffd966", color="#caa13a", width=0.55, fixedsize=true];
+    s_inst  [label="inst"];
+    s_place [label="place"];
+    s_lower [label="lower"];
+    s_seg   [label="seg"];
+
+    node [shape=box, style="filled,dashed", fillcolor="#f6f0e0", color="#bbbbbb", fixedsize=false];
+    s_idle  [label="drains results;\nhandle failures", fontsize=10];
+
+    s_inst -> s_place -> s_lower -> s_seg -> s_idle [color="#caa13a", arrowsize=0.7];
+  }
+
+  subgraph cluster_n0 {
+    label=<<b>phobos-pod #0</b> owns C(0,0), home of shared A(0,&middot;)>;
+    style="rounded,filled"; fillcolor="#eef4fb"; color="#5b8fc9"; fontsize=12;
+
+    subgraph cluster_n0_host {
+      label="host (exec engine + tile server)"; labeljust="l";
+      style="filled"; fillcolor="#f7faff"; color="#aac4e6"; fontsize=10;
+
+      node [shape=box, fillcolor="#dfe3e8", color="#9aa3ad", width=0.85, height=0.4, fixedsize=true];
+      n0_alloc [label="ALLOC\nacc (VRAM)"];
+
+      node [shape=box, fillcolor="#7fb3e0", color="#3d72a8", width=0.95, height=0.42, fixedsize=true];
+      n0_lA00 [label="LOAD\nA(0,0)"];
+      n0_lA01 [label="LOAD\nA(0,1)"];
+
+      node [shape=box, fillcolor="#7fb3e0", color="#3d72a8", width=0.95, height=0.42, fixedsize=true];
+      n0_lB00 [label="LOAD\nB(0,0)"];
+      n0_lB10 [label="LOAD\nB(1,0)"];
+
+      node [shape=box, fillcolor="#7fb3e0", color="#3d72a8", width=0.95, height=0.42, fixedsize=true];
+      n0_store [label="STORE\nC(0,0)"];
+
+      node [shape=circle, fillcolor="#e06666", color="#a83838", width=0.45, fixedsize=true];
+      n0_free [label="FREE"];
+
+      node [shape=box, fillcolor="#c9b3e8", color="#8a6fb5", width=1.1, height=0.5, fixedsize=true];
+      n0_serveA [label="tile server\nholds A(0,&middot;)"];
+    }
+
+    subgraph cluster_n0_dev {
+      label="GPU"; labeljust="l";
+      style="filled"; fillcolor="#e7f3e2"; color="#76b900"; fontsize=10;
+
+      node [shape=box, fillcolor="#9ccd8f", color="#76b900", width=2.2, height=0.6, fixedsize=false, margin="0.11,0.06"];
+      n0_init [label=<<b>COMPUTE</b> k_init<br/><font point-size="9">w acc@0 (zero-fill)</font>>];
+      n0_b0   [label=<<b>COMPUTE</b> k_body<br/><font point-size="9">rmw acc; r A(0,0); r B(0,0)</font>>];
+      n0_b1   [label=<<b>COMPUTE</b> k_body<br/><font point-size="9">rmw acc; r A(0,1); r B(1,0)</font>>];
+
+      n0_init -> n0_b0 [color="#76b900", penwidth=2.2, label="acc@0", fontcolor="#3f7a34"];
+      n0_b0   -> n0_b1 [color="#76b900", penwidth=2.2, label="acc@1", fontcolor="#3f7a34"];
+    }
+  }
+
+  subgraph cluster_n1 {
+    label=<<b>phobos-pod #1</b> owns C(0,1)>;
+    style="rounded,filled"; fillcolor="#eef4fb"; color="#5b8fc9"; fontsize=12;
+
+    subgraph cluster_n1_host {
+      label="host (exec engine)"; labeljust="l";
+      style="filled"; fillcolor="#f7faff"; color="#aac4e6"; fontsize=10;
+
+      node [shape=box, fillcolor="#dfe3e8", color="#9aa3ad", width=0.85, height=0.4, fixedsize=true];
+      n1_alloc [label="ALLOC\nacc (VRAM)"];
+
+      node [shape=box, fillcolor="#f0b562", color="#c98a2e", width=0.95, height=0.42, fixedsize=true];
+      n1_fA00 [label="FETCH\nA(0,0)"];
+      n1_fA01 [label="FETCH\nA(0,1)"];
+
+      node [shape=box, fillcolor="#7fb3e0", color="#3d72a8", width=0.95, height=0.42, fixedsize=true];
+      n1_lB01 [label="LOAD\nB(0,1)"];
+      n1_lB11 [label="LOAD\nB(1,1)"];
+
+      node [shape=box, fillcolor="#7fb3e0", color="#3d72a8", width=0.95, height=0.42, fixedsize=true];
+      n1_store [label="STORE\nC(0,1)"];
+
+      node [shape=circle, fillcolor="#e06666", color="#a83838", width=0.45, fixedsize=true];
+      n1_free [label="FREE"];
+    }
+
+    subgraph cluster_n1_dev {
+      label="GPU"; labeljust="l";
+      style="filled"; fillcolor="#e7f3e2"; color="#76b900"; fontsize=10;
+
+      node [shape=box, fillcolor="#9ccd8f", color="#76b900", width=2.2, height=0.6, fixedsize=false, margin="0.11,0.06"];
+      n1_init [label=<<b>COMPUTE</b> k_init<br/><font point-size="9">w acc@0 &nbsp;(zero-fill)</font>>];
+      n1_b0   [label=<<b>COMPUTE</b> k_body<br/><font point-size="9">rmw acc; r A(0,0); r B(0,1)</font>>];
+      n1_b1   [label=<<b>COMPUTE</b> k_body<br/><font point-size="9">rmw acc; r A(0,1); r B(1,1)</font>>];
+
+      n1_init -> n1_b0 [color="#76b900", penwidth=2.2, label="acc@0", fontcolor="#3f7a34"];
+      n1_b0   -> n1_b1 [color="#76b900", penwidth=2.2, label="acc@1", fontcolor="#3f7a34"];
+    }
+  }
+
+  { rank=same; n0_init; n1_init; }
+  { rank=same; n0_b0 n1_b0; }
+  { rank=same; n0_b1 n1_b1; }
+  { rank=same; n0_store n1_store; }
+  { rank=same; n0_free n1_free; }
+
+  s_seg -> n0_alloc [lhead=cluster_n0, color="#caa13a", style=dashed, penwidth=1.6,
+                     label="IssueSegment", fontcolor="#8a6f1e"];
+  s_seg -> n1_alloc [lhead=cluster_n1, color="#caa13a", style=dashed, penwidth=1.6,
+                     label="IssueSegment", fontcolor="#8a6f1e"];
+  n0_free -> s_idle [ltail=cluster_n0, color="#9aa3ad", style=dotted,
+                     label="Complete (batched)", fontcolor="#7a828c"];
+  n1_free -> s_idle [ltail=cluster_n1, color="#9aa3ad", style=dotted];
+
+  edge [color="#3d72a8", penwidth=1.3, arrowhead=normal, fontcolor="#2f5d8a"];
+  storage -> n0_lA00;
+  storage -> n0_lA01;
+  storage -> n0_lB00;
+  storage -> n0_lB10;
+  storage -> n1_lB01;
+  storage -> n1_lB11;
+  n0_store -> storage;
+  n1_store -> storage;
+
+  edge [color="#8a6fb5", penwidth=1.3, style=solid, arrowhead=vee, fontcolor="#5a4385"];
+  n0_lA00 -> n0_serveA;
+  n0_lA01 -> n0_serveA;
+
+  edge [color="#7a5fb0", penwidth=1.3, style=dashed, arrowhead=vee, fontcolor="#5a4385"];
+  n0_alloc -> n0_init [label="alloc"];
+  n0_lA00 -> n0_b0 [label="H2D"];
+  n0_lB00 -> n0_b0 [label="H2D"];
+  n0_lA01 -> n0_b1 [label="H2D"];
+  n0_lB10 -> n0_b1 [label="H2D"];
+  n0_b1 -> n0_store [label="D2H"];
+
+  n1_alloc -> n1_init [label="alloc"];
+  n1_fA00 -> n1_b0 [label="H2D"];
+  n1_lB01 -> n1_b0 [label="H2D"];
+  n1_fA01 -> n1_b1 [label="H2D"];
+  n1_lB11 -> n1_b1 [label="H2D"];
+  n1_b1 -> n1_store [label="D2H"];
+
+  n0_store -> n0_free [color="#a83838", penwidth=1.0, style=solid, arrowhead=normal];
+  n1_store -> n1_free [color="#a83838", penwidth=1.0, style=solid, arrowhead=normal];
+
+  edge [color="#c98a2e", penwidth=2.4, style=solid, arrowhead=normal, fontcolor="#9c6a1f"];
+  n0_serveA -> n1_fA00 [label="DCN A(0,0)"];
+  n0_serveA -> n1_fA01 [label="DCN A(0,1)"];
+
+  edge [color="#a83838", penwidth=1.0, style=dotted, arrowhead=vee, fontcolor="#8a2e2e"];
+  n0_serveA -> n0_free [label="expected_serves=1 (per A tile)"];
+}
