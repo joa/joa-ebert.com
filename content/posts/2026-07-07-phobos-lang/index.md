@@ -700,7 +700,7 @@ kernel sgemm(A: tensor<f32>[M, K],
 7. `acc += dot(a, b)` is the dot product of two tiles, accumulated into a tile.
 8. `C[pm * TILE_M :+ TILE_M, pn * TILE_N :+ TILE_N] = acc` assigns a complete tile.
 
-We do not compute individual values using threads. In fact, the whole concept of threads is abstracted away. Instead we specify arithmetic over 2D-tiles and the code generator will assign the computations to the threads. How tiles are read or written - to the metal - is up to the codegen.
+We do not compute individual values using threads. In fact, the whole concept of threads is abstracted away. Instead we specify arithmetic over 2D-tiles and the code generator will assign the computations to the threads. How tiles are read or written — to the metal — is up to the codegen.
 
 Furthermore, `TILE_M`, `TILE_N` and `TILE_K` become extremely interesting optimization variables. For example, if we set `TILE_M=16`, `TILE_N=16`, and `TILE_K=16`, the codegen can map this `tile<f32>[16, 16]` structure directly to native Tensor Core MMA instructions on my 2080 SUPER[^22].
 
