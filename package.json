@@ -11,6 +11,7 @@
     "hugo:build": "hugo --minify",
     "hugo:serve": "hugo server -D -F --watch --port 1313",
     "format": "prettier --write .",
+    "gen-placeholders": "node scripts/gen-placeholders.js",
     "lint": "prettier --check .",
     "build-fonts": "python scripts/subset-fonts.py"
   },
@@ -22,6 +23,7 @@
     "@tailwindcss/vite": "^4.2.1",
     "concurrently": "^9.2.1",
     "prettier": "^3.8.1",
+    "puppeteer": "^25.3.0",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.2.1",
     "vite": "^8.0.0",

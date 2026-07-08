@@ -21,7 +21,7 @@ const PHASE_SPLIT = 0.6
 
 // Quality params scaled through two-phase lerp (integers unless float: true).
 // Priority order: cloud → shadow → fog/god rays (lowest).
-const QUALITY_PARAMS = S.isMobile
+const QUALITY_PARAMS = S.lowSpec
   ? [
       { key: "godRaySteps", min: 16, target: 32, targetAt: PHASE_SPLIT, max: 48 },
       { key: "cloudSteps", min: 6, target: 10, targetAt: 0.35, max: 20 },
@@ -51,11 +51,19 @@ export class AdaptiveQuality {
   #prevNow = null
   #fogEnabled = true
   #enabled = true
+  #locked = false
   // Reused output object — apply() rewrites every key each frame.
   #out = {}
 
+  // Pin quality to a fixed value (placeholder captures pin 1). apply() keeps
+  // running so the scaled params match a live session at that quality exactly.
+  lockQuality(value) {
+    this.#q = value
+    this.#locked = true
+  }
+
   tick(nowMs) {
-    if (!this.#enabled) return
+    if (!this.#enabled || this.#locked) return
     if (this.#prevNow === null) {
       this.#prevNow = nowMs
       return

@@ -18,27 +18,27 @@ import S from "../shared/settings.js"
 // ########################################
 
 export const AREA_SIZE = 40.0
-export const BLADE_COUNT = S.isTBDR ? 400000 : 1000000
+export const BLADE_COUNT = S.lowSpecTBDR ? 400000 : 1000000
 export const BLADE_HEIGHT = 0.3
 export const BLADE_WIDTH = 0.015
-export const BLADE_SEGMENTS = S.isMobile ? 6 : 8
+export const BLADE_SEGMENTS = S.lowSpec ? 6 : 8
 export const TILE_SIZE = 2.0
 export const TILES_X = Math.ceil((2 * AREA_SIZE) / TILE_SIZE)
 export const NUM_TILES = TILES_X * TILES_X
 export const DENSE_R = S.isMobile ? 5 : 5
 export const DENSE_X = 2 * DENSE_R + 1
 export const DENSE_TILES = DENSE_X * DENSE_X
-export const BLADES_SPARSE = S.isTBDR ? 200 : 400
+export const BLADES_SPARSE = S.lowSpecTBDR ? 200 : 400
 export const BLADES_DENSE = Math.round((BLADE_COUNT - NUM_TILES * BLADES_SPARSE) / DENSE_TILES)
-export const SHADOWMAP_SIZE = S.isMobile ? 1024 : 2048
+export const SHADOWMAP_SIZE = S.lowSpec ? 1024 : 2048
 export const GROUND_N = 256
 export const PARTICLE_COUNT = 1000
 export const FIREFLY_COUNT = 32
 export const RAIN_DROP_COUNT = 15000
-export const BLOOM_LEVELS = S.isMobile ? 1 : 4
-export const NOISE_TEX_WIDTH = S.isMobile ? 32 : 64
-export const NOISE_TEX_HEIGHT = S.isMobile ? 32 : 64
-export const NOISE_TEX_DEPTH = S.isMobile ? 32 : 64
+export const BLOOM_LEVELS = S.lowSpec ? 1 : 4
+export const NOISE_TEX_WIDTH = S.lowSpec ? 32 : 64
+export const NOISE_TEX_HEIGHT = S.lowSpec ? 32 : 64
+export const NOISE_TEX_DEPTH = S.lowSpec ? 32 : 64
 export const NOISE_TEX_PERIOD_X = NOISE_TEX_WIDTH * 0.5
 export const NOISE_TEX_PERIOD_Y = NOISE_TEX_HEIGHT * 0.5
 export const NOISE_TEX_PERIOD_Z = NOISE_TEX_DEPTH * 0.5
@@ -434,12 +434,12 @@ export function generateSSAOKernel(sampleCount) {
 // rg11b10ufloat (when renderable) halves bandwidth vs rgba16float across the
 // whole extract/down/up chain; bloom never uses alpha or negative values.
 export function bloomChainFormat(device) {
-  if (S.isMobile) return "rgba8unorm"
+  if (S.lowSpec) return "rgba8unorm"
   return device.features.has("rg11b10ufloat-renderable") ? "rg11b10ufloat" : "rgba16float"
 }
 
 export function createRenderTargets(gpu, width, height) {
-  const divisor = S.isMobile ? 4 : 2
+  const divisor = S.lowSpec ? 4 : 2
   const hw = Math.max(1, Math.floor(width / divisor))
   const hh = Math.max(1, Math.floor(height / divisor))
   // Mobile renders SSAO at half-res; temporal accumulation + linear upsample in
@@ -448,8 +448,8 @@ export function createRenderTargets(gpu, width, height) {
   // Desktop stays at full-res: half-res SSAO + temporal history accumulates
   // into horizontal scanlines (tried 2026-07-07, reverted — and the whole pass
   // is only ~0.1 ms, so there is nothing worth saving here).
-  const ssaoW = S.isMobile ? Math.max(1, Math.floor(width / 2)) : width
-  const ssaoH = S.isMobile ? Math.max(1, Math.floor(height / 2)) : height
+  const ssaoW = S.lowSpec ? Math.max(1, Math.floor(width / 2)) : width
+  const ssaoH = S.lowSpec ? Math.max(1, Math.floor(height / 2)) : height
   const bloomFormat = bloomChainFormat(gpu.device)
   const makeRT = (w, h, fmt) => ({ texture: gpu.createRenderTarget(w, h, fmt), width: w, height: h })
 
@@ -471,7 +471,7 @@ export function createRenderTargets(gpu, width, height) {
     godRay: makeRT(hw, hh),
     ssao: makeRT(ssaoW, ssaoH),
     ssaoPrev: makeRT(ssaoW, ssaoH),
-    ssaoBlur: S.isMobile ? null : makeRT(width, height),
+    ssaoBlur: S.lowSpec ? null : makeRT(width, height),
     bloomHalfW: hw,
     bloomHalfH: hh,
   }
@@ -495,7 +495,7 @@ export function createCloudShadowTexture(gpu) {
 // #######################################################
 
 export function createMountainHeightmap(gpu) {
-  const size = S.isMobile ? 1024 : 2048
+  const size = S.lowSpec ? 1024 : 2048
   return gpu.createReadableRenderTarget(size, size)
 }
 

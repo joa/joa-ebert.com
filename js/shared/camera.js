@@ -162,7 +162,7 @@ export class Camera {
   }
 
   getViewMatrix(timeInfo) {
-    if (!this.#locked && !this.#isTouching) return this.#getBobbedViewMatrix(timeInfo)
+    if (!this.#locked && !this.#isTouching && !S.isCapture) return this.#getBobbedViewMatrix(timeInfo)
     const up = quatRotateVec(this.#effectiveOrientation, [0, 1, 0])
     return lookAtMatrix(this.position, this.target, up)
   }

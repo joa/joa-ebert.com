@@ -10,9 +10,19 @@ const isMac = (navigator.userAgentData?.platform ?? navigator.platform)?.toLower
 const isTBDR = isMobile || isMac
 const perfHud = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("perf")
 
+// Set by scripts/placeholder-harness.js (?capture): static camera (no view
+// bobbing) and full quality regardless of the emulated device. Quality gates
+// check lowSpec / lowSpecTBDR; device-specific scene framing keeps isMobile.
+const isCapture = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("capture")
+const lowSpec = isMobile && !isCapture
+const lowSpecTBDR = isTBDR && !isCapture
+
 export default {
   isMobile,
   isTBDR,
+  isCapture,
+  lowSpec,
+  lowSpecTBDR,
   perfHud,
   idleY,
   model: "/assets/joa-ebert.com.glb",

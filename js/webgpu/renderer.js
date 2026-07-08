@@ -88,8 +88,8 @@ const FAR = 1000
 const MS_TO_SEC = 0.001
 const SHADOW_DISTANCE_WU = 40
 const SUN_PROJECTION_WU = 1000
-const CLOUD_SHADOW_INTERVAL = S.isMobile ? 15 : 7
-const LIGHTING_INTERVAL = S.isMobile ? 13 : 4
+const CLOUD_SHADOW_INTERVAL = S.lowSpec ? 15 : 7
+const LIGHTING_INTERVAL = S.lowSpec ? 13 : 4
 const FIREFLY_SLOTS = 32
 
 const UNIFORM_USAGE = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -200,7 +200,7 @@ export class Renderer {
 
   // Textures & render targets
   // #########################
-  #mountainHeightmap = new GPUHeightmap(S.isMobile ? 1024 : 2048, 20000)
+  #mountainHeightmap = new GPUHeightmap(S.lowSpec ? 1024 : 2048, 20000)
   #groundHeightmap = new GPUHeightmap(512, 80)
   #mountainHeightmapTexture = null
   #groundHeightmapTexture = null
@@ -702,7 +702,7 @@ export class Renderer {
         { binding: 6, resource: lin },
         { binding: 7, resource: rt.godRay.view },
         { binding: 8, resource: lin },
-        { binding: 9, resource: (S.isMobile ? rt.ssao : rt.ssaoBlur).view },
+        { binding: 9, resource: (S.lowSpec ? rt.ssao : rt.ssaoBlur).view },
         { binding: 10, resource: lin },
         { binding: 11, resource: this.#rtViews.gAlbedo },
         { binding: 12, resource: near },
@@ -1043,8 +1043,8 @@ export class Renderer {
     f[2] = timeInfo.godRayDecay * (ctx.mountainVisibility ?? 1) + timeInfo.rain
     f[3] = timeInfo.sunAboveHorizon ? 1 : 0
     dv.setUint32(16, Math.round(timeInfo.godRaySteps), true)
-    // shadowEnabled — mobile disables dynamic shadow-map sampling in god rays.
-    f[5] = S.isMobile ? 0 : 1
+    // shadowEnabled — low-spec disables dynamic shadow-map sampling in god rays.
+    f[5] = S.lowSpec ? 0 : 1
     ctx.queue.writeBuffer(this.#godRayUniformBuffer, 0, buf)
   }
 
@@ -1096,7 +1096,7 @@ export class Renderer {
     f[4] = lr
     f[5] = lg
     f[6] = lb
-    f[7] = S.isMobile ? 0 : 1
+    f[7] = S.lowSpec ? 0 : 1
     f[8] = sx
     f[9] = sy
     f[10] = timeInfo.dofFocusNear
@@ -1319,7 +1319,7 @@ export class Renderer {
 
     const eff = this.effectsSystem
     const needsForward =
-      !S.isMobile ||
+      !S.lowSpec ||
       timeInfo.rain > 0 ||
       (eff?.particleCount ?? 0) > 0 ||
       ((eff?.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) ||
@@ -1339,17 +1339,17 @@ export class Renderer {
   }
 
   #drawDeferred(pass, ctx) {
-    // On mobile: sky is drawn first (no depth test) so background pixels are
-    // visible through the deferred discard. On desktop: sky is drawn in the
+    // On low-spec: sky is drawn first (no depth test) so background pixels are
+    // visible through the deferred discard. Otherwise: sky is drawn in the
     // forward pass with a depth test so no change here.
-    if (S.isMobile && this.#passBindGroups.sky) {
+    if (S.lowSpec && this.#passBindGroups.sky) {
       pass.setPipeline(this.#pipelines.skyNoDepth)
       pass.setBindGroup(1, this.#passBindGroups.sky)
       pass.draw(3)
     }
 
     // Deferred lighting (fullscreen, depthCompare: always — depth read via sampler).
-    pass.setPipeline(S.isMobile ? this.#pipelines.deferredLightingDiscard : this.#pipelines.deferredLighting)
+    pass.setPipeline(S.lowSpec ? this.#pipelines.deferredLightingDiscard : this.#pipelines.deferredLighting)
     pass.setBindGroup(1, this.#passBindGroups.deferredLighting)
     pass.draw(3)
     // Firefly lights (fullscreen additive). Skip when no fireflies are visible.
@@ -1362,10 +1362,10 @@ export class Renderer {
   }
 
   #drawForward(pass, ctx, timeInfo) {
-    // Sky (depthCompare: less-equal — only writes background pixels). On mobile
+    // Sky (depthCompare: less-equal — only writes background pixels). On low-spec
     // the sky is already drawn in #drawDeferred (skyNoDepth), so skip it here to
     // avoid a redundant fullscreen sky pass when the forward pass runs.
-    if (!S.isMobile && this.#passBindGroups.sky) {
+    if (!S.lowSpec && this.#passBindGroups.sky) {
       pass.setPipeline(this.#pipelines.sky)
       pass.setBindGroup(1, this.#passBindGroups.sky)
       pass.draw(3)
@@ -1415,12 +1415,12 @@ export class Renderer {
   #renderSSAOPass(encoder, ctx) {
     const rt = this.#renderTargets
     if (!rt || !this.#ssaoBgs) return
-    const idx = S.isMobile ? 0 : this.#ssaoFrame % 2
-    this.#ssaoData[2] = S.isMobile ? 1 : this.#ssaoFrame === 0 ? 1 : 0.1
+    const idx = S.lowSpec ? 0 : this.#ssaoFrame % 2
+    this.#ssaoData[2] = S.lowSpec ? 1 : this.#ssaoFrame === 0 ? 1 : 0.1
     ctx.queue.writeBuffer(this.#ssaoUniformBuffer, 0, this.#ssaoData)
 
     const ssaoTarget = idx === 0 ? rt.ssao : rt.ssaoPrev
-    const hasBlur = !S.isMobile
+    const hasBlur = !S.lowSpec
     this.#fullscreenTarget(
       encoder,
       ssaoTarget,

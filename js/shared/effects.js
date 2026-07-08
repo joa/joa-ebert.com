@@ -31,7 +31,7 @@ export class EffectsSystem {
     // Pollen particles are disabled on mobile: the additive sprite pass forces the
     // forward render pass to run every frame (extra TBDR tile flush), and the visual
     // contribution is barely perceptible on small screens.
-    if (!S.isMobile) this.#initParticles(1000)
+    if (!S.lowSpec) this.#initParticles(1000)
     this.#initRain(15000)
     this.#initFireflies(32)
   }

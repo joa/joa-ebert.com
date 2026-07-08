@@ -1,7 +1,8 @@
 import "../css/style.css"
 import { ExtLink } from "./components/ext-link.js"
 import { LifeSpanRatio } from "./components/life-span-ratio.js"
-import { setupThemeToggle } from "./components/theme-toggle.js"
+import { setupThemeToggle, isDark } from "./components/theme-toggle.js"
+import S from "./shared/settings.js"
 
 const ID_PROFILE_MORE = "profile-more"
 const ID_PROFILE_MORE_BTN = "profile-more-btn"
@@ -52,6 +53,31 @@ function setupMoreButton() {
     },
     { once: true, passive: true }
   )
+}
+
+// Static header image rendered by `npm run gen-placeholders`, shown when the
+// WebGPU renderer is unavailable. Mirrors the live scene: the index follows
+// the clock (one image per hour and device class), blog headers follow the
+// theme (dedicated compact-scene captures per theme and device class).
+function showPlaceholder(mode) {
+  const img = document.getElementById("canvas-fallback")
+  if (!img) return
+
+  const device = S.isMobile ? "mobile" : "desktop"
+  const update = (dark = isDark()) => {
+    img.src =
+      mode === "full"
+        ? `/assets/placeholders/${device}-${String(new Date().getHours()).padStart(2, "0")}.webp`
+        : `/assets/placeholders/compact-${device}-${dark ? "dark" : "light"}.webp`
+  }
+
+  update()
+  img.classList.remove("hidden")
+
+  if (mode !== "full") {
+    window.addEventListener("themeoverride", ({ detail }) => update(detail.dark), { passive: true })
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", event => update(event.matches))
+  }
 }
 
 class App {
@@ -117,11 +143,7 @@ class App {
         opts.controlsUI?.destroy()
         dismissSpinner()
         canvas.hidden = true
-        const fallback = document.getElementById("canvas-fallback")
-        if (fallback) {
-          fallback.src = fallback.dataset.src
-          fallback.classList.remove("hidden")
-        }
+        showPlaceholder(mode)
         console.error("failed to initialize renderer:", error)
         return
       }

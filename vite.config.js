@@ -35,7 +35,7 @@ function minifyGLSL(src) {
     .join("\n")
 }
 
-function shaderBundlePlugin() {
+export function shaderBundlePlugin() {
   return {
     name: "shader-bundle",
     resolveId(id) {

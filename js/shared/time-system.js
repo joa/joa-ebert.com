@@ -7,12 +7,12 @@ const PERIOD_DAWN = "dawn"
 const PERIOD_GOLDEN = "golden"
 const PERIOD_DAY = "day"
 
-const fogQuality = S.isMobile ? 0.0 : 1.0
+const fogQuality = S.lowSpec ? 0.0 : 1.0
 const cloudBase = 65.0 - Math.random() * 15.0
 const cloudTop = 89.0 + Math.random() * 11.0
 const cloudCoverage = 0.55 + (Math.random() - 0.5) * 0.1
-const cloudSteps = S.isMobile ? 12 : 16
-const cloudShadowSteps = S.isMobile ? 2 : 3
+const cloudSteps = S.lowSpec ? 12 : 16
+const cloudShadowSteps = S.lowSpec ? 2 : 3
 const cloudSigmaE = 0.01 + Math.random() * 0.05
 const rain = Math.random() > 0.6 ? 0.3 + Math.random() * 0.7 : 0.0
 const overcast = 0.01
