@@ -1,12 +1,20 @@
 import "../css/style.css"
 import { ExtLink } from "./components/ext-link.js"
 import { LifeSpanRatio } from "./components/life-span-ratio.js"
+import { RenderToggle } from "./components/render-toggle.js"
 import { setupThemeToggle, isDark } from "./components/theme-toggle.js"
 import S from "./shared/settings.js"
 
 const ID_PROFILE_MORE = "profile-more"
 const ID_PROFILE_MORE_BTN = "profile-more-btn"
-const COMPONENTS = [ExtLink, LifeSpanRatio]
+const COMPONENTS = [ExtLink, LifeSpanRatio, RenderToggle]
+
+function dismissSpinner() {
+  const spinner = document.getElementById("canvas-spinner")
+  if (!spinner) return
+  spinner.style.opacity = "0"
+  spinner.addEventListener("transitionend", () => spinner.remove(), { once: true })
+}
 
 async function awaitDocument() {
   if (document.readyState === "loading") {
@@ -99,6 +107,16 @@ class App {
   async initCanvas() {
     const home = window.location.pathname === "/"
     const mode = home ? "full" : "small"
+
+    // Visitor opted out of the live scene — skip the renderer, show the placeholder.
+    if (RenderToggle.disabled) {
+      const canvas = document.getElementById("webgpu-canvas")
+      if (canvas) canvas.hidden = true
+      dismissSpinner()
+      showPlaceholder(mode)
+      return
+    }
+
     const skipIntro = !home || localStorage.getItem("skipIntro")
     const [{ TimeSystem }, { AdaptiveQuality }] = await Promise.all([
       import("./shared/time-system.js"),
@@ -118,13 +136,6 @@ class App {
 
     if (!skipIntro) {
       opts.timeSystem.setOverride("rain", 0) // who wants to start with rain eh?
-    }
-
-    const dismissSpinner = () => {
-      const spinner = document.getElementById("canvas-spinner")
-      if (!spinner) return
-      spinner.style.opacity = "0"
-      spinner.addEventListener("transitionend", () => spinner.remove(), { once: true })
     }
 
     const f = async x => {

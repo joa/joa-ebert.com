@@ -405,7 +405,6 @@ header.canvas-expanded {
     @apply mb-0;
   }
 
-
   .post-body summary {
     cursor: pointer;
   }
@@ -448,27 +447,36 @@ header.canvas-expanded {
 }
 
 /* Controls UI — glass morphism panel (JS-generated markup) */
+.render-toggle-btn,
 .fs-btn,
 .anim-btn,
 .controls-burger {
   @apply w-10 h-10 rounded-lg flex justify-center items-center cursor-pointer z-1000 transition-colors duration-300;
 }
 
+.render-toggle-btn,
 .fs-btn,
 .anim-btn {
   @apply relative top-5 left-5 -mb-10 p-0 box-border opacity-60;
 }
 
-.anim-btn {
+/* Stacked top-left, toggle above fullscreen above animation. */
+.fs-btn {
   top: 60px;
 }
 
+.anim-btn {
+  top: 100px;
+}
+
+.render-toggle-btn:hover,
 .anim-btn:hover,
 .fs-btn:hover,
 .controls-burger:hover {
   @apply backdrop-blur bg-white/18;
 }
 
+.render-toggle-btn svg,
 .anim-btn svg,
 .fs-btn svg {
   @apply w-5 h-5 block;
