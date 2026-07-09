@@ -10,6 +10,7 @@
 import { TimeSystem } from "../js/shared/time-system.js"
 import { AdaptiveQuality } from "../js/shared/adaptive-quality.js"
 import { Renderer } from "../js/webgpu/renderer.js"
+import S from "../js/shared/settings.js"
 
 const mode = new URLSearchParams(window.location.search).get("mode") ?? "full"
 const canvas = document.getElementById("webgpu-canvas")
@@ -28,6 +29,19 @@ const renderer = new Renderer(canvas, mode, { timeSystem, adaptiveQuality, contr
 window.placeholders = {
   ready: renderer.init().then(() => true),
   setHour: hour => timeSystem.setOverrideTime(hour),
+  // Reposition the idle-drift camera target (debug/inspection captures). The
+  // renderer eases toward S.initPos / S.initLookAt each frame, so overriding
+  // them (and idleY, which co-drives the settle height) moves the camera once
+  // enough frames elapse. Used to get close-up looks into the grass.
+  setCamera: (pos, look) => {
+    S.initPos[0] = pos[0]
+    S.initPos[1] = pos[1]
+    S.initPos[2] = pos[2]
+    S.idleY = pos[1]
+    S.initLookAt[0] = look[0]
+    S.initLookAt[1] = look[1]
+    S.initLookAt[2] = look[2]
+  },
   awaitFrames: count =>
     new Promise(resolve => {
       const step = n => (n <= 0 ? resolve() : requestAnimationFrame(() => step(n - 1)))

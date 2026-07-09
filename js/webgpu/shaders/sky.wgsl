@@ -420,9 +420,21 @@ fn atmosphere(dir: vec3f) -> vec3f {
     return nightSky;
   }
   let daySky = preethamSky(dir, sunDir);
-  // Preetham chromaticity near the horizon trends purple; anchor to keyframe horizon.
-  let horizBlend = (1.0 - smoothstep(0.0, 0.25, elevation)) * 0.6;
-  let corrected = mix(daySky, sky.horizonColor, horizBlend);
+  // Two problems make the physical sky read purple: Preetham chromaticity trends
+  // magenta, and the near-white keyframe horizon color rotates toward violet
+  // under AgX. So build a clean blue gradient here — a rich zenith easing to a
+  // cyan-leaning (AgX-safe) horizon — and anchor the physical sky strongly to it.
+  let horizonBlue = vec3f(0.42, 0.58, 0.78);
+  let refSky = mix(horizonBlue, sky.zenithColor, pow(elevation, 0.6));
+  // Anchor hard toward blue when the sun is high (where Preetham reads purple),
+  // but release it near the horizon so golden-hour warmth survives.
+  let highSun = smoothstep(0.12, 0.35, sunElev);
+  // Preetham is brightest and most purple right at the horizon; when the sun is
+  // high, push the anchor to near-full there to erase the residual purple strip
+  // along the mountain line. Gated by highSun so low-sun warmth is untouched.
+  let horizonExtra = (1.0 - smoothstep(0.0, 0.15, elevation)) * highSun * 0.06;
+  let anchorStr = min(mix(0.2, 0.92, highSun) + horizonExtra, 0.98);
+  let corrected = mix(daySky, refSky, anchorStr);
   let blend = smoothstep(-0.1, 0.15, sunElev);
   return mix(nightSky, corrected, blend);
 }
@@ -666,6 +678,30 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
       let moon = moonRender(dir, moonDir);
       color += moon.rgb * moon.a * nightBlend;
     }
+  }
+
+  // Sun disc + warm glow. Driven bright enough to clip the HDR ceiling so it
+  // blooms and reads as blinding, with a warm (never pink) core. Composited
+  // before the clouds below so overcast can occlude it.
+  let sunDirN = normalize(frame.sunDirection);
+  let sunUpGate = smoothstep(-0.02, 0.10, sunDirN.y);
+  if (sunUpGate > 0.0 && dir.y > -0.05) {
+    let sd = max(dot(dir, sunDirN), 0.0);
+    // Real-sun angular size (~0.5°): a tight, bright disc that blooms round.
+    // A broad aureole here would only feed a soft blob, so it is intentionally
+    // omitted — the glare comes from bloom + god rays, not a fat glow term.
+    // A defined solar body: a round disc with a crisp limb (clips the ceiling so
+    // it stays a solid white body through the bloom) rather than only a soft
+    // radial falloff, which reads as a gradient smudge. Slightly larger than the
+    // true 0.5° so the body survives at web resolution; glare still comes from
+    // bloom + god rays, not a fat glow term.
+    let disc = smoothstep(0.99982, 0.99991, sd); // ~1.0° disc with a sharp limb
+    let core = pow(sd, 3000.0);                   // intense pinpoint core
+    let glow = pow(sd, 800.0);                    // tight warm halo
+    let coreCol = vec3f(1.0, 0.99, 0.95);
+    let warmCol = vec3f(1.0, 0.86, 0.60);
+    let sunCol = coreCol * (disc * 6.0 + core * 3.0) + warmCol * glow * 0.5;
+    color += sunCol * sunUpGate;
   }
 
   // Chemtrails

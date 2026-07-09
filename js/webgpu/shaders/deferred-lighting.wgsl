@@ -78,6 +78,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> FullscreenVertexOutput
   );
 }
 
+const PI: f32 = 3.14159265;
 const SHADOW_SAMPLES: i32 = 16;
 const SHADOW_RADIUS: f32 = 2.5;
 
@@ -143,6 +144,31 @@ fn cloudShadowFactor(worldPos: vec3f) -> f32 {
   let dims = textureDimensions(cloudShadowTex);
   let coord = vec2i(uv * vec2f(dims));
   return textureLoad(cloudShadowTex, clamp(coord, vec2i(0), vec2i(dims) - 1), 0).r;
+}
+
+// Cook-Torrance GGX specular with Smith geometry and Schlick Fresnel. Replaces
+// the old Blinn-Phong lobe: energy-shaped highlights with a grazing-angle
+// Fresnel rise, which is the difference between "real surface" and "CG plastic".
+// NdotL cancels against the BRDF denominator, so the returned term is the
+// specular *radiance* factor (multiply by light colour outside).
+fn ggxSpecular(N: vec3f, V: vec3f, L: vec3f, roughness: f32, F0: f32) -> f32 {
+  let NdotL = dot(N, L);
+  if (NdotL <= 0.0) {
+    return 0.0;
+  }
+  let H = normalize(L + V);
+  let NdotH = max(dot(N, H), 0.0);
+  let NdotV = max(dot(N, V), 1e-3);
+  let VdotH = max(dot(V, H), 0.0);
+  let a = roughness * roughness;
+  let a2 = a * a;
+  let d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+  let D = a2 / (PI * d * d);
+  let k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+  let gv = NdotV / (NdotV * (1.0 - k) + k);
+  let gl = NdotL / (NdotL * (1.0 - k) + k);
+  let F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+  return min(D * gv * gl * F / (4.0 * NdotV), 8.0);
 }
 
 fn textSparkle(worldPos: vec3f, N: vec3f, H: vec3f) -> f32 {
@@ -246,14 +272,24 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
 
   // Text uses wider PCF radius
   var shadow: f32;
+  var sunFacing = 1.0;
   if (matID == 2) {
     shadow = shadowFactorRadius(worldPos, 12.0);
+    // Faces turned away from the sun are geometrically self-shadowed. This gate
+    // is applied to the *direct sun* only (below), not to the skylight, so the
+    // noisy wide-PCF samples stop dappling the unlit side while that side still
+    // receives sky fill — otherwise back faces read as flat black.
+    sunFacing = smoothstep(-0.05, 0.30, dot(N, L));
   } else {
     shadow = shadowFactorDefault(worldPos);
   }
   let cloudShadow = cloudShadowFactor(worldPos);
 
+  // Cast-shadow visibility (drives the skylight tint) vs. direct-sun reception
+  // (additionally excludes self-shadowed back faces). For non-text sunFacing is
+  // 1, so the two are identical there.
   let lit = shadow * cloudShadow * lighting.mountainVisibility * lighting.cloudLightOcclusion;
+  let sunLit = lit * sunFacing;
 
   // Ground micro-AO
   var microAO = 1.0;
@@ -265,11 +301,32 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     albedo *= microAO * creviceAO;
   }
 
+  // Outdoor light is two-toned: a warm direct sun plus a cool blue skylight that
+  // fills the shadows. The sun warms as it drops toward the horizon (golden hour).
+  let sunLow = (1.0 - smoothstep(0.0, 0.35, frame.sunDirection.y)) * frame.sunAboveHorizon;
+  let sunColor = mix(vec3f(1.0, 0.99, 0.97), vec3f(1.0, 0.62, 0.34), sunLow);
+
   // Ambient — geometry shadow bleeds into the ambient floor so contrast survives
-  // high ambientIntensity settings (without this, shadow/lit ratio collapses to ~17%)
-  let skyBlend = NdotUp * 0.25;
-  let ambientLight = mix(vec3f(1.0), lighting.skyColor, skyBlend) * lighting.ambientIntensity;
-  let ambientShadow = mix(0.38, 1.0, shadow);
+  // high ambientIntensity settings (without this, shadow/lit ratio collapses to ~17%).
+  // Cool skylight fill: a luminance-preserving hue shift toward the sky colour so
+  // shadows read blue rather than neutral grey, pushed stronger in shadow and on
+  // up-facing surfaces (which see more open sky).
+  let skyLuma = max(dot(lighting.skyColor, vec3f(0.2126, 0.7152, 0.0722)), 0.001);
+  let coolFill = clamp(lighting.skyColor / skyLuma, vec3f(0.0), vec3f(1.5));
+  // Blue fill is strongest where the surface is unlit (in shade / facing away
+  // from the sun) and on up-facing surfaces that see more open sky.
+  let fillAmt = clamp(mix(0.75, 0.12, sunLit) + 0.12 * NdotUp, 0.0, 0.9);
+  // Hemispheric form: up-facing surfaces see more of the open sky dome than
+  // down-facing ones, so the skylight fill varies with the surface normal. This
+  // is what gives shaded faces their shape instead of reading as a flat wash.
+  let hemi = mix(0.6, 1.0, NdotUp);
+  let ambientLight = mix(vec3f(1.0), coolFill, fillAmt) * lighting.ambientIntensity * hemi;
+  // Trust the sun shadow map for the ambient occlusion floor only where the face
+  // actually sees the sun. On self-shadowed back faces the wide-PCF samples are
+  // pure acne, so fade to unoccluded sky fill there — clean, and correct, since a
+  // face turned away from the sun isn't occluded from the sky.
+  let castShadow = mix(1.0, shadow, sunFacing);
+  let ambientShadow = mix(0.38, 1.0, castShadow);
   var ambient = albedo * ambientLight * ambientShadow;
   if (matID == 1) {
     ambient *= microAO * creviceAO;
@@ -278,7 +335,7 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   // Diffuse — sun contribution uses a gentler coupling to ambientIntensity so
   // direct light remains meaningful even at high ambient values
   let sunScale = max(1.0 - lighting.ambientIntensity * 0.6, 0.25);
-  let diffBase = albedo * lit * wrapNdotL;
+  let diffBase = albedo * sunLit * wrapNdotL * sunColor;
   var diffuseColor: vec3f;
   if (matID == 0) {
     diffuseColor = diffBase * sunScale * 0.85;
@@ -290,13 +347,29 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
 
   var color = ambient + diffuseColor;
 
-  // Specular
+  // Specular — physically-based GGX. Roughness derived from the legacy Phong
+  // exponent so no G-buffer change is needed (grass ~0.28, ground ~0.30, text
+  // ~0.16); specScale stays the per-material strength control.
   if (shininess > 0.5 && specScale > 0.0) {
-    let spec = pow(max(dot(N, H), 0.0), shininess);
+    let roughness = clamp(sqrt(2.0 / (shininess + 2.0)), 0.05, 1.0);
+    let spec = ggxSpecular(N, V, L, roughness, 0.04);
     let ambGate = select(lighting.ambientIntensity, 1.0, matID == 2);
     let heightMask = select(1.0, smoothstep(0.2, 0.85, extraData), matID == 0);
     let specColor = select(vec3f(1.0), vec3f(0.88, 0.97, 0.72), matID == 0);
-    color += specColor * spec * lit * ambGate * heightMask * specScale;
+    color += specColor * sunColor * spec * sunLit * ambGate * heightMask * specScale;
+  }
+
+  // Grass grazing-angle sky sheen: a cool silvery rim on the blade tips — the
+  // shimmer of a real windblown meadow. It is a backlight effect (light coming
+  // through the blades toward the eye), so the backlit gate keeps it near-zero at
+  // overhead noon and reveals it at low sun, where it is physically real. Added
+  // as light so it never greys the albedo.
+  if (matID == 0) {
+    let fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    let sheenHeight = smoothstep(0.35, 0.95, extraData);
+    let backlit = pow(max(dot(-L, V), 0.0), 3.0);
+    let skySheen = mix(vec3f(1.0), coolFill, 0.5) * skyLuma;
+    color += skySheen * fresnel * sheenHeight * backlit * 0.6 * lit;
   }
 
   // SSS
@@ -312,6 +385,21 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
       let backBleed = max(-dot(N, L) + 0.2, 0.0) * 0.35;
       color += vec3f(1.0, 0.82, 0.55) * (forward * 0.5 + backBleed) * lit * sssGate;
     }
+  }
+
+  // Contre-jour rim on the letters. When the sun sits behind the text its
+  // camera-facing faces fall into self-shadow (sunFacing → 0 above) yet the
+  // form should not read as a flat filled slab — light wraps its edges. A
+  // view-grazing Fresnel, gated by how back-lit the fragment is (sun opposite
+  // the view direction) and by cast-shadow visibility, adds that bright rim, and
+  // the sky fill on the shaded front is pulled down so the silhouette reads dark
+  // against the bright sky. This is the "lit silhouette + rim" of real contre-jour.
+  if (matID == 2) {
+    let rim = pow(1.0 - max(dot(N, V), 0.0), 2.5);
+    let backlit = smoothstep(0.0, -0.55, dot(V, L));
+    let rimVis = shadow * cloudShadow * lighting.mountainVisibility * lighting.cloudLightOcclusion;
+    color += sunColor * rim * backlit * rimVis * 1.4 * frame.sunAboveHorizon;
+    color *= 1.0 - backlit * (1.0 - sunFacing) * 0.35;
   }
 
   // Text sparkles

@@ -129,6 +129,14 @@ export function computeAtmosphereSkyColorInto(out, timeInfo) {
     timeInfo.turbidity ?? 2.5,
     timeInfo.overcast ?? 0.0
   )
+  // Mirror sky.wgsl atmosphere(): anchor Preetham toward the blue gradient
+  // (here equal to nightR/G/B, the near-zenith sample) to remove the purple cast,
+  // hard when the sun is high, released near the horizon so golden hour survives.
+  const anchor = 0.2 + 0.72 * smoothstep(Math.max(0, Math.min(1, (sunElev - 0.12) / 0.23)))
+  day.r += (nightR - day.r) * anchor
+  day.g += (nightG - day.g) * anchor
+  day.b += (nightB - day.b) * anchor
+
   const raw = Math.max(0, Math.min(1, (sunElev + 0.1) / 0.25))
   const blend = smoothstep(raw)
 

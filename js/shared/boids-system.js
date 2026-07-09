@@ -6,7 +6,7 @@
 // Exported constants (BIRD_COUNT, BIRD_ORBIT_RADIUS, etc.) are used by shaders and controls.
 import S from "./settings"
 
-export const BIRD_COUNT = S.isMobile ? 500 : 1000
+export const BIRD_COUNT = S.lowSpec ? 500 : 3000
 export const BIRD_ORBIT_RADIUS = 20 // lemniscate parameter `a` in world units
 export const BIRD_ORBIT_DISTANCE = 60 // wu ahead of camera's look-at along forward dir
 export const BIRD_ORBIT_SPEED = 1.08 // radians / second

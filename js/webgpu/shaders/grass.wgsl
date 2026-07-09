@@ -61,6 +61,7 @@ struct VertexOutput {
   @location(4) normal: vec3f,
   @location(5) @interpolate(flat) tuft: vec2f,
   @location(6) @interpolate(flat) noiseAdjust: vec3f,
+  @location(7) @interpolate(flat) bladeSeed: f32,
 }
 
 fn cubicBezier(p0: vec3f, p1: vec3f, p2: vec3f, p3: vec3f, t: f32) -> vec3f {
@@ -117,7 +118,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
   let curvePos = cubicBezier(p0, p1, p2, p3, t);
 
-  let width = grassBaseWidth * (1.0 - t * t) * 2.5;
+  // Per-blade width character. A shared (1 - t*t) taper on every blade is the
+  // clone tell; instead each blade hashes its rotation into an overall width
+  // scale (thin & wiry ↔ broad & strappy), a taper-shape exponent, and a gentle
+  // longitudinal wobble so no two share a silhouette. Squaring the scale hash
+  // skews the population toward slimmer blades, with occasional broad ones.
+  let wSeed = fract(sin(input.grassRotation * 91.7) * 43758.5453);
+  let widthScale = mix(0.6, 1.55, wSeed * wSeed);
+  let taperPow = mix(0.65, 2.1, fract(wSeed * 7.3));
+  let widthWobble = 1.0 + (vnoise1(t * 4.0 + wSeed * 20.0) - 0.5) * 0.30;
+  let width = grassBaseWidth * pow(1.0 - t * t, taperPow) * widthScale * widthWobble * 2.5;
   let xOffset = (input.position.x - 0.5) * width;
 
   let t2 = t * t;
@@ -158,6 +168,11 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     1.0,
   );
 
+  // Per-blade random seed. grassRotation is a uniform per-blade random; hashing
+  // it together with the blade's world position decorrelates it from the
+  // clump-level tuft seed so individual blades vary independently.
+  let bladeSeed = fract(sin(input.grassRotation * 12.9898 + dot(grassPosition.xz, vec2f(78.233, 37.719))) * 43758.5453);
+
   return VertexOutput(
     frame.projectionMatrix * frame.viewMatrix * worldPos,
     input.texCoord,
@@ -167,6 +182,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     normal,
     input.tuftIn,
     input.noiseAdjustIn,
+    bladeSeed,
   );
 }
 
@@ -179,6 +195,7 @@ struct FragmentInput {
   @location(4) normal: vec3f,
   @location(5) @interpolate(flat) tuft: vec2f,
   @location(6) @interpolate(flat) noiseAdjust: vec3f,
+  @location(7) @interpolate(flat) bladeSeed: f32,
 }
 
 struct GBufferOutput {
@@ -187,6 +204,18 @@ struct GBufferOutput {
   @location(2) material: vec4f,
 }
 
+
+// 1D value noise used to carve ragged silhouettes into the blade quad.
+fn h11(x: f32) -> f32 {
+  return fract(sin(x * 127.1) * 43758.5453);
+}
+
+fn vnoise1(x: f32) -> f32 {
+  let i = floor(x);
+  let f = fract(x);
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(h11(i), h11(i + 1.0), u);
+}
 
 const BAYER = array<i32, 16>(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
 
@@ -197,18 +226,36 @@ fn fragmentMain(input: FragmentInput) -> GBufferOutput {
   let tDist = input.tuft.x;
   let cellSeed = input.tuft.y;
 
-  let isDry = smoothstep(0.68, 0.78, cellSeed);
+  let isDry = smoothstep(0.80, 0.93, cellSeed);
   let isDark = smoothstep(0.10, 0.25, cellSeed) * (1.0 - isDry);
   let isLush = smoothstep(0.40, 0.58, cellSeed) * (1.0 - isDry) * (1.0 - isDark);
 
-  var baseCol = vec3f(72.0 / 255.0, 105.0 / 255.0, 52.0 / 255.0);
-  var midCol = vec3f(88.0 / 255.0, 122.0 / 255.0, 58.0 / 255.0);
-  var tipCol = vec3f(148.0 / 255.0, 185.0 / 255.0, 78.0 / 255.0);
+  // Fresh-lawn greens. Green channel stays high (so it never greys out under the
+  // bright midday fill) but red is pulled down: the old tip (148,185,78) had an
+  // r:g ratio of ~0.8 — a chartreuse/hay yellow. Real grass sits near 0.6.
+  var baseCol = vec3f(60.0 / 255.0, 101.0 / 255.0, 49.0 / 255.0);
+  var midCol = vec3f(74.0 / 255.0, 119.0 / 255.0, 56.0 / 255.0);
+  var tipCol = vec3f(116.0 / 255.0, 175.0 / 255.0, 84.0 / 255.0);
 
-  let dryShift = vec3f(0.08, 0.04, -0.09);
+  // Dry clumps read as muted straw/tan (green pulled down), not bright neon
+  // yellow — real dead grass is desaturated, not luminous.
+  let dryShift = vec3f(0.05, -0.05, -0.08);
   let lushShift = vec3f(-0.02, 0.04, 0.00);
   let darkDim = 1.0 - isDark * 0.18;
-  let shift = dryShift * isDry + lushShift * isLush;
+  // Per-blade random seeds, decorrelated from one another and from the clump
+  // seed so individual blades vary independently of their tuft.
+  let bSeed = input.bladeSeed;
+  let bHue = fract(bSeed * 7.13);
+  let bBright = fract(bSeed * 3.71);
+  let bDry = fract(bSeed * 13.37);
+
+  // Hue drift breaks up the single uniform tint that reads as fake grass. Two
+  // scales stacked: a broad clump-level drift (warm yellow-green ↔ cool
+  // blue-green) plus a stronger per-blade jitter so neighbouring blades in the
+  // same tuft no longer read as clones.
+  let hueVar = (cellSeed - 0.5) + (bHue - 0.5) * 1.4;
+  let hueShift = vec3f(hueVar * 0.05, hueVar * 0.012, -hueVar * 0.045);
+  let shift = dryShift * isDry + lushShift * isLush + hueShift;
   baseCol = (baseCol + shift) * darkDim;
   midCol = (midCol + shift) * darkDim;
   tipCol = (tipCol + shift) * darkDim;
@@ -224,6 +271,31 @@ fn fragmentMain(input: FragmentInput) -> GBufferOutput {
 
   grassColor += input.noiseAdjust * vec3f(0.25, 0.5, 0.125);
 
+  // Imperfections — the small blemishes that separate a living meadow from a
+  // field of shaded clones. All keyed to the per-blade seed so they scatter
+  // across individual blades rather than whole clumps.
+
+  // Senescent tips: roughly the drier half of blades brown off from the tip
+  // down, further on the driest. Straw-brown and desaturated, not neon yellow.
+  let tipBrownAmt = smoothstep(0.5, 1.0, bDry);
+  let brownStart = mix(0.9, 0.4, tipBrownAmt);
+  let brownTip = smoothstep(brownStart, 1.0, h) * tipBrownAmt;
+  grassColor = mix(grassColor, vec3f(0.52, 0.43, 0.21), brownTip * 0.7);
+
+  // Chlorosis: the occasional wholly pale/yellowed blade (nutrient-starved).
+  let chlorosis = smoothstep(0.93, 0.99, bDry);
+  grassColor = mix(grassColor, vec3f(0.66, 0.70, 0.34), chlorosis * 0.55);
+
+  // Insect/blight flecks: sparse dark specks banded along the blade. Stable in
+  // blade space, so they ride the blade as it sways instead of shimmering.
+  let fleckN = fract(sin(h * 27.0 + bSeed * 53.0) * 43758.5453);
+  let fleck = smoothstep(0.94, 0.99, fleckN) * step(0.35, bSeed);
+  grassColor *= 1.0 - fleck * 0.35;
+
+  // Per-blade exposure: some blades simply catch more or less light than their
+  // neighbours (canopy shading above, age differences), a strong cue for depth.
+  grassColor *= mix(0.84, 1.14, bBright);
+
   grassColor *= 0.98;
 
   // Morning dew: blueish-white tint concentrated at blade tips
@@ -237,10 +309,42 @@ fn fragmentMain(input: FragmentInput) -> GBufferOutput {
   let ribDark = 1.0 - smoothstep(0.0, 0.4, ribDist) * 0.30;
   grassColor = mix(baseCol, grassColor, ribDark);
 
-  let edgeDist = min(input.texCoord.x, 1.0 - input.texCoord.x);
-  let edgeFade = smoothstep(0.0, 0.32, edgeDist);
-  let tipFade = 1.0 - smoothstep(0.84, 1.0, h);
-  let alpha = edgeFade * tipFade;
+  // Mesh-silhouette imperfections. The blade is a flat quad in (u, h) space, so
+  // carving its coverage reshapes the true outline that the alpha-test resolves.
+  // These read only on the silhouette — against the sky and inter-blade gaps —
+  // because in a dense sward an interior hole just reveals identical grass
+  // behind it. So the emphasis is on fine edge serration + deep marginal notches,
+  // not interior pinholes. All keyed to the per-blade seed (flat).
+  let seed = bSeed;
+
+  // Torn margins: high-frequency serration (fine teeth — this is what reads as
+  // "torn"; a slow wander only bows the edge) plus an occasional deep gnaw. Each
+  // side runs an independent profile. Serration frequency is high in h.
+  let serrL = vnoise1(h * 55.0 + seed * 31.0);
+  let serrR = vnoise1(h * 55.0 + seed * 71.0 + 5.0);
+  let gnawL = vnoise1(h * 5.0 + seed * 13.0);
+  let gnawR = vnoise1(h * 5.0 + seed * 53.0 + 9.0);
+  let eatL = serrL * 0.08 + gnawL * gnawL * gnawL * 0.30;
+  let eatR = serrR * 0.08 + gnawR * gnawR * gnawR * 0.30;
+  let edgeDist = min(u - eatL, (1.0 - eatR) - u);
+  var cover = smoothstep(0.0, 0.035, edgeDist);
+
+  // Jagged / broken tip: the top edge is roughened per blade, and a subset of
+  // blades are snapped off well below full height (grazed or wind-broken).
+  let tipJag = (vnoise1(u * 9.0 + seed * 23.0) - 0.5) * 0.08;
+  let tipCut = mix(0.55, 1.0, smoothstep(0.0, 0.55, fract(seed * 5.1)));
+  cover *= 1.0 - smoothstep(tipCut - 0.05 + tipJag, tipCut + tipJag, h);
+
+  // Insect bite: a deep rounded notch chewed from one margin of ~40% of blades.
+  if (fract(seed * 13.9) > 0.6) {
+    let biteSide = step(0.5, fract(seed * 57.3));
+    let biteU = mix(-0.05, 1.05, biteSide);
+    let biteH = 0.2 + 0.6 * fract(seed * 91.7);
+    let dBite = length(vec2f((u - biteU) * 0.5, h - biteH));
+    cover *= smoothstep(0.16, 0.21, dBite);
+  }
+
+  let alpha = cover;
 
   let bx = i32(input.fragCoord.x) % 4;
   let by = i32(input.fragCoord.y) % 4;

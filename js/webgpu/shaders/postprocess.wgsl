@@ -113,19 +113,48 @@ fn hue2rgb(h: f32) -> vec3f {
   else { return vec3f(1.0, 0.0, xc); }
 }
 
-fn habler(x: vec3f) -> vec3f {
-  const A: f32 = 0.15;
-  const B: f32 = 0.50;
-  const C: f32 = 0.10;
-  const D: f32 = 0.20;
-  const E: f32 = 0.02;
-  const F: f32 = 0.30;
-  return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+// AgX tonemap (Troy Sobotka's AgX; minimal polynomial fit as used by
+// three.js / Filament). Consumes linear HDR. AgX's sigmoid bakes in a ~2.2
+// display gamma, but this pipeline applies no OETF (non-sRGB swapchain, all
+// downstream grading tuned in a roughly-linear domain), so we linearize the
+// result with pow(2.2) to land in the same domain the previous Hable curve
+// produced. AgX desaturates highlights the way film and camera sensors do,
+// which is the main reason it reads as photographic rather than game-like.
+fn agxContrastApprox(x: vec3f) -> vec3f {
+  let x2 = x * x;
+  let x4 = x2 * x2;
+  return 15.5 * x4 * x2
+       - 40.14 * x4 * x
+       + 31.96 * x4
+       - 6.868 * x2 * x
+       + 0.4298 * x2
+       + 0.1191 * x
+       - 0.00232;
 }
 
-fn filmicTonemap(x: vec3f) -> vec3f {
-  const W: f32 = 1.6;
-  return habler(x) / habler(vec3f(W));
+fn filmicTonemap(colorIn: vec3f) -> vec3f {
+  // Rec.709 → AgX working space (inset) and back (outset).
+  let inset = mat3x3f(
+    vec3f(0.856627153315983, 0.0951212405381588, 0.0482516061458583),
+    vec3f(0.137318972929847, 0.761241990602591, 0.101439036467562),
+    vec3f(0.11189821299995, 0.0767994186031903, 0.811302368396859),
+  );
+  let outset = mat3x3f(
+    vec3f(1.1271005818144368, -0.1413297634984383, -0.14132976349843826),
+    vec3f(-0.11060664309660323, 1.157823702216272, -0.11060664309660294),
+    vec3f(-0.016493938717834573, -0.016493938717834257, 1.2519364065950405),
+  );
+  const minEv: f32 = -12.47393;
+  const maxEv: f32 = 4.026069;
+
+  var c = inset * max(colorIn, vec3f(0.0));
+  c = clamp(log2(max(c, vec3f(1e-10))), vec3f(minEv), vec3f(maxEv));
+  c = (c - minEv) / (maxEv - minEv);
+  c = agxContrastApprox(c);
+  c = outset * c;
+  c = clamp(c, vec3f(0.0), vec3f(1.0));
+  // Linearize back into the pipeline's no-OETF output domain.
+  return pow(c, vec3f(2.2));
 }
 
 fn contrastCurve(c_in: vec3f, contrast: f32) -> vec3f {
@@ -293,19 +322,35 @@ fn lensFlare(uv: vec2f) -> vec3f {
 
   let dx = (uv.x - sun.x) * aspect;
   let dy = uv.y - sun.y;
-  let d0 = length(vec2f(dx, dy));
+  let r = length(vec2f(dx, dy));
   var result = vec3f(0.0);
 
-  // Central glow
-  result += vec3f(1.0, 0.96, 0.88) * exp(-d0 * d0 * 90.0) * 0.5;
+  // Warm veiling glow — light scattering through wet, squinted lashes. Kept
+  // faint; the visible sun disc and bloom already supply most of the core.
+  result += vec3f(1.0, 0.96, 0.88) * exp(-r * r * 140.0) * 0.16; // tight core
+  result += vec3f(1.0, 0.90, 0.76) * exp(-r * 11.0) * 0.04;      // broad soft halo
 
-  // Eyelash diffraction streaks
-  let strX0 = exp(-dx * dx * 2.5);
-  result += vec3f(1.0, 0.92, 0.72) * exp(-dy * dy * 600.0) * strX0 * 0.30;
-  result += vec3f(0.95, 0.86, 0.65) * exp(-(dy + 0.020) * (dy + 0.020) * 1000.0) * exp(-dx * dx * 5.0) * 0.14;
-  result += vec3f(0.92, 0.84, 0.63) * exp(-(dy - 0.016) * (dy - 0.016) * 1100.0) * exp(-dx * dx * 5.5) * 0.13;
-  result += vec3f(0.88, 0.78, 0.58) * exp(-(dy + 0.042) * (dy + 0.042) * 1400.0) * exp(-dx * dx * 7.5) * 0.08;
-  result += vec3f(0.86, 0.76, 0.56) * exp(-(dy - 0.038) * (dy - 0.038) * 1300.0) * exp(-dx * dx * 8.0) * 0.07;
+  // Eyelash diffraction: faint, irregular streaks smeared vertically from the
+  // sun. Upper and lower lashes form a comb of near-vertical fibers; diffraction
+  // spreads light into fine rays that hug the vertical axis (a strong pow() bias
+  // kills the horizontal, so this reads as squinting rather than a star). Each
+  // lash differs in spacing and brightness, so per-ray amplitude is hashed, and
+  // two overlapping combs give an organic, uneven fringe.
+  let angle = atan2(dy, dx);
+  let vertical = pow(abs(sin(angle)), 5.0);    // concentrate onto up/down only
+  let flutter = sin(frame.time * 1.3) * 0.015; // subtle blink shimmer
+  var lashes: f32 = 0.0;
+  for (var oct: i32 = 0; oct < 2; oct++) {
+    let freq = select(15.0, 31.0, oct == 1);
+    let idx = (angle + flutter) * freq;
+    let cell = floor(idx);
+    let f = fract(idx) - 0.5;
+    let amp = 0.35 + 0.65 * ppRand(vec2f(cell, f32(oct))); // per-lash brightness
+    lashes += amp * exp(-f * f * 30.0) * select(1.0, 0.55, oct == 1);
+  }
+  // Rays stay short and dissolve into the core glow near the center.
+  let rayFalloff = exp(-r * 11.0) * smoothstep(0.0, 0.025, r);
+  result += vec3f(1.0, 0.93, 0.74) * lashes * vertical * rayFalloff * 0.13;
 
   return result * baseI;
 }
@@ -500,7 +545,9 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   // 7. Aerial perspective
   if (rawDepthMain < 0.9999) {
     let haze = 1.0 - exp(-max(lineariseDepth(rawDepthMain) - 8.0, 0.0) * 0.022);
-    let aerialColor = mix(vec3f(0.62, 0.74, 0.94), pp.fogColor, 0.30);
+    // AgX-safe cyan-blue base (pale near-white blues rotate to mauve under AgX);
+    // fogColor kept at a low weight so time-of-day tint survives without purpling.
+    let aerialColor = mix(vec3f(0.42, 0.58, 0.78), pp.fogColor, 0.15);
     color = mix(color, aerialColor, haze * mix(0.06, 0.65, clamp(frame.sunAboveHorizon * 2.5, 0.0, 1.0)));
   }
 
@@ -521,9 +568,12 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   }
 
   // 8. Vignette
-  var vigUV = uv;
-  vigUV *= 1.0 - vigUV.yx;
-  color *= mix(1.0, pow(vigUV.x * vigUV.y * 18.0, 0.14), pp.vignetteStrength);
+  // Gentle cos^4-style optical falloff that only touches the far corners. The
+  // old pow()-based curve crushed the corners to pure black abruptly — a classic
+  // "hide the render edges" tell. This eases in smoothly and never fully darkens.
+  let vd = uv - vec2f(0.5);
+  let vig = 1.0 - smoothstep(0.20, 0.55, dot(vd, vd)) * 0.30;
+  color *= mix(1.0, vig, pp.vignetteStrength);
 
   // 9. Color grading
   color *= pp.cgExposure;

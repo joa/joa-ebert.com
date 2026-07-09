@@ -72,33 +72,6 @@ fn worldPosFromDepth(uv: vec2f, depth: f32) -> vec3f {
   return world.xyz / world.w;
 }
 
-fn sampleShadow(worldPos: vec3f) -> f32 {
-  if (godray.shadowEnabled < 0.5) {
-    return 1.0;
-  }
-  let lsPos = frame.lightSpaceMatrix * vec4f(worldPos, 1.0);
-  let lsNDC = lsPos.xyz / lsPos.w;
-  let shadowUV = vec2f(lsNDC.x * 0.5 + 0.5, 0.5 - lsNDC.y * 0.5);
-  if (shadowUV.x < 0.0 || shadowUV.x > 1.0 ||
-      shadowUV.y < 0.0 || shadowUV.y > 1.0 ||
-      lsNDC.z < 0.0 || lsNDC.z > 1.0) {
-    return 1.0;
-  }
-  let bias = 0.001;
-  let refDepth = lsNDC.z - bias;
-  let smDims = vec2f(textureDimensions(shadowMap));
-  let sc = vec2i(shadowUV * smDims);
-  let smDepth = textureLoad(shadowMap, clamp(sc, vec2i(0), vec2i(smDims) - 1), 0);
-  if (refDepth <= smDepth) { return 1.0; } else { return 0.0; }
-}
-
-fn sampleCloudShadow(worldPos: vec3f) -> f32 {
-  let uv = clamp(worldPos.xz / 80.0 + 0.5, vec2f(0.0), vec2f(1.0));
-  let csDims = textureDimensions(cloudShadowTex);
-  let csCoord = vec2i(uv * vec2f(csDims));
-  return textureLoad(cloudShadowTex, clamp(csCoord, vec2i(0), vec2i(csDims) - 1), 0).r;
-}
-
 @fragment
 fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   if (godray.sunVisible < 0.5 || godray.godRayIntensity < 0.005 ||
@@ -140,12 +113,13 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     let sceneColor = textureLoad(sceneTexture, clamp(sceneCoord, vec2i(0), vec2i(sceneDims) - 1), 0).rgb;
 
     let lum = dot(sceneColor, vec3f(0.2126, 0.7152, 0.0722));
+    // Only the bright sky/sun emits light shafts; solid geometry (grass, text)
+    // occludes them and contributes nothing. Emitting from lit geometry turned
+    // sunlit foreground grass into a bright green vertical shaft — geometry must
+    // block the crepuscular rays, never radiate them.
     var contrib = 0.0;
     if (depth >= 0.9999) {
       contrib = smoothstep(0.58, 0.78, lum);
-    } else {
-      let wp = worldPosFromDepth(suv, depth);
-      contrib = sampleShadow(wp) * sampleCloudShadow(wp) * 0.35;
     }
     color += sceneColor * contrib * illumination * WEIGHT;
     illumination *= DECAY;
