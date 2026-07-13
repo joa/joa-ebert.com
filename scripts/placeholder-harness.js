@@ -23,12 +23,18 @@ const adaptiveQuality = new AdaptiveQuality()
 // frozen mid-air.
 adaptiveQuality.lockQuality(1)
 timeSystem.setOverride("rain", 0)
+timeSystem.setOverride("grainStrength", 0)
+timeSystem.setOverride("cloudSteps", 64)
+timeSystem.setOverride("fogSteps", 64)
 
 const renderer = new Renderer(canvas, mode, { timeSystem, adaptiveQuality, controlsUI: null })
 
 window.placeholders = {
   ready: renderer.init().then(() => true),
   setHour: hour => timeSystem.setOverrideTime(hour),
+  // Force any timeInfo property (fog, DoF, etc.) for a capture, mirroring the
+  // debug controls — lets shots exercise non-default looks (e.g. far blur + fog).
+  setOverride: (key, value) => timeSystem.setOverride(key, value),
   // Reposition the idle-drift camera target (debug/inspection captures). The
   // renderer eases toward S.initPos / S.initLookAt each frame, so overriding
   // them (and idleY, which co-drives the settle height) moves the camera once

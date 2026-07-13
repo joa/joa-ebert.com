@@ -6,7 +6,8 @@ import { pathToFileURL } from "url"
 import { resolve } from "path"
 
 const APP_DIR = "C:/Users/joaeb/code/joa-ebert.com"
-const OUT_DIR = "C:/Users/joaeb/AppData/Local/Temp/claude/C--Users-joaeb-code-joa-ebert-com/1cc9044a-6ee1-4e1c-aee2-2796fdefe56f/scratchpad"
+const OUT_DIR =
+  "C:/Users/joaeb/AppData/Local/Temp/claude/C--Users-joaeb-code-joa-ebert-com/1cc9044a-6ee1-4e1c-aee2-2796fdefe56f/scratchpad"
 const { shaderBundlePlugin } = await import("../vite.config.js")
 
 const hours = (process.argv[2] ?? "14.33").split(",").map(parseFloat)
@@ -72,6 +73,12 @@ try {
   if (process.env.CAM) {
     const [pos, look] = JSON.parse(process.env.CAM)
     await page.evaluate(([p, l]) => window.placeholders.setCamera(p, l), [pos, look])
+  }
+  // Optional timeInfo overrides: OVR='{"fogIntensity":3,"depthOfField":7}'
+  if (process.env.OVR) {
+    for (const [key, value] of Object.entries(JSON.parse(process.env.OVR))) {
+      await page.evaluate(([k, v]) => window.placeholders.setOverride(k, v), [key, value])
+    }
   }
   await page.evaluate(n => window.placeholders.awaitFrames(n), WARMUP_FRAMES)
   for (const hour of hours) {
