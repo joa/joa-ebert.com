@@ -231,6 +231,7 @@ export class Renderer {
   #skyUniformBuffer = null
   #rainUniformBuffer = null
   #godRayUniformBuffer = null
+  #dofUniformBuffer = null
   #fogUniformBuffer = null
   #particleUniformBuffer = null
   #fireflySpriteUniformBuffer = null
@@ -250,6 +251,8 @@ export class Renderer {
   #bloomDownBgs = null
   #bloomUpBgs = null
   #godRayBg = null
+  #dofCocBg = null
+  #dofBlurBg = null
   #particleBg = null
   #fireflySpriteBg = null
   #postprocessBg = null
@@ -268,6 +271,7 @@ export class Renderer {
   #birdData = new Float32Array([0.05, 0.05, 0.07, 0.6, 3.0, 0.4, 0.0, 0.0])
   #sky = stage(176)
   #godRay = stage(48)
+  #dof = stage(32)
   #fog = stage(576)
   #fireflyLights = stage(528)
   #sunScreenRaw = [0, 0]
@@ -469,6 +473,7 @@ export class Renderer {
     this.#skyUniformBuffer = gpu.createBuffer(178, UNIFORM_USAGE)
     this.#rainUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
     this.#godRayUniformBuffer = gpu.createBuffer(48, UNIFORM_USAGE)
+    this.#dofUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
     this.#fogUniformBuffer = gpu.createBuffer(576, UNIFORM_USAGE)
     this.#particleUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
     this.#fireflySpriteUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
@@ -580,7 +585,16 @@ export class Renderer {
       gMaterial: rt.gMaterial.createView(),
       sceneTexture: rt.sceneTexture.createView(),
     }
-    for (const t of [rt.ssao, rt.ssaoPrev, rt.ssaoBlur, rt.bloomExtract, rt.godRay, ...rt.bloomMips]) {
+    for (const t of [
+      rt.ssao,
+      rt.ssaoPrev,
+      rt.ssaoBlur,
+      rt.bloomExtract,
+      rt.godRay,
+      rt.dofDown,
+      rt.dofBlur,
+      ...rt.bloomMips,
+    ]) {
       if (t) t.view = t.texture.createView()
     }
     this.#bloomUpTargets = [...rt.bloomMips.slice(0, BLOOM_LEVELS - 1).reverse(), rt.bloomExtract]
@@ -690,6 +704,28 @@ export class Renderer {
       ],
     })
 
+    // DoF: coc pass reads full-res scene + depth → dofDown; blur pass reads
+    // dofDown → dofBlur. Both bind the shared dof uniform.
+    this.#dofCocBg = device.createBindGroup({
+      layout: lay.dofCoc,
+      entries: [
+        { binding: 0, resource: { buffer: this.#dofUniformBuffer } },
+        { binding: 1, resource: this.#rtViews.sceneTexture },
+        { binding: 2, resource: ctx.depthSampleView },
+        { binding: 3, resource: (S.lowSpec ? rt.ssao : rt.ssaoBlur).view },
+        { binding: 4, resource: lin },
+        { binding: 5, resource: this.#rtViews.gAlbedo },
+      ],
+    })
+    this.#dofBlurBg = device.createBindGroup({
+      layout: lay.dofBlur,
+      entries: [
+        { binding: 0, resource: { buffer: this.#dofUniformBuffer } },
+        { binding: 1, resource: rt.dofDown.view },
+        { binding: 2, resource: lin },
+      ],
+    })
+
     this.#postprocessBg = device.createBindGroup({
       layout: lay.postprocess,
       entries: [
@@ -709,6 +745,7 @@ export class Renderer {
         { binding: 13, resource: { buffer: this.#fogUniformBuffer } },
         { binding: 14, resource: this.#noiseTexture.createView() },
         { binding: 15, resource: gpu.linearRepeat },
+        { binding: 16, resource: rt.dofBlur.view },
       ],
     })
   }
@@ -739,7 +776,8 @@ export class Renderer {
     if (this.#renderTargets) {
       const rt = this.#renderTargets
       for (const k of ["gAlbedo", "gNormal", "gMaterial", "sceneTexture"]) rt[k]?.destroy()
-      for (const k of ["ssao", "ssaoPrev", "ssaoBlur", "bloomExtract", "godRay"]) rt[k]?.texture?.destroy()
+      for (const k of ["ssao", "ssaoPrev", "ssaoBlur", "bloomExtract", "godRay", "dofDown", "dofBlur"])
+        rt[k]?.texture?.destroy()
       for (const m of rt.bloomMips) m.texture.destroy()
       this.#renderTargets = createRenderTargets(this.#gpu, width, height)
       this.#rebuildPassBindGroups()
@@ -759,6 +797,8 @@ export class Renderer {
     if (rt.ssaoBlur) clearRT(enc, rt.ssaoBlur.view, CLEAR_WHITE)
     clearRT(enc, rt.bloomExtract.view, CLEAR_BLACK)
     clearRT(enc, rt.godRay.view, CLEAR_BLACK)
+    // a=0 so a stale DoF read composites as fully-sharp before the first write.
+    clearRT(enc, rt.dofBlur.view, CLEAR_TRANSPARENT)
     this.#ctx.device.queue.submit([enc.finish()])
     this.#ssaoFrame = 0
   }
@@ -1046,6 +1086,19 @@ export class Renderer {
     // shadowEnabled — low-spec disables dynamic shadow-map sampling in god rays.
     f[5] = S.lowSpec ? 0 : 1
     ctx.queue.writeBuffer(this.#godRayUniformBuffer, 0, buf)
+  }
+
+  #writeDofUniforms(ctx, timeInfo) {
+    const { f, buf } = this.#dof
+    f[0] = NEAR
+    f[1] = FAR
+    f[2] = timeInfo.depthOfField
+    f[3] = timeInfo.dofFocusNear
+    f[4] = timeInfo.dofFocusFar
+    f[5] = timeInfo.dofBlurNear
+    f[6] = timeInfo.dofBlurFar
+    f[7] = timeInfo.ssaoIntensity
+    ctx.queue.writeBuffer(this.#dofUniformBuffer, 0, buf)
   }
 
   #writeFogUniforms(ctx, timeInfo) {
@@ -1497,6 +1550,34 @@ export class Renderer {
     )
   }
 
+  // Half-res depth of field: signed-CoC downsample → hexagonal bokeh gather.
+  // Composited against the sharp scene in postprocess by the gather's blend alpha.
+  #renderDofPass(encoder, ctx) {
+    const rt = this.#renderTargets
+    if (!rt || !this.#dofCocBg) return
+    const empty = this.#emptyBindGroup
+    this.#fullscreenTarget(
+      encoder,
+      rt.dofDown,
+      this.#pipelines.dofCoc,
+      empty,
+      this.#dofCocBg,
+      CLEAR_BLACK,
+      "clear",
+      this.#profiler?.spanBegin("dof")
+    )
+    this.#fullscreenTarget(
+      encoder,
+      rt.dofBlur,
+      this.#pipelines.dofBlur,
+      empty,
+      this.#dofBlurBg,
+      CLEAR_TRANSPARENT,
+      "clear",
+      this.#profiler?.spanEnd("dof")
+    )
+  }
+
   #renderPostProcessPass(encoder, canvasView) {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: canvasView, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" }],
@@ -1650,6 +1731,7 @@ export class Renderer {
     this.#writeSkyUniforms(ctx, timeInfo)
     this.#writeRainUniforms(ctx, timeInfo)
     this.#writeGodRayUniforms(ctx, timeInfo)
+    this.#writeDofUniforms(ctx, timeInfo)
     this.#writeFogUniforms(ctx, timeInfo)
     this.#writePostProcessUniforms(ctx, timeInfo)
     this.#profiler?.cpuEnd("uniforms")
@@ -1724,6 +1806,9 @@ export class Renderer {
     }
     if (isActive(timeInfo.godRayIntensity)) {
       withErrorScopes(ctx.device, "godrays", () => this.#renderGodRaysPass(encoder, ctx, timeInfo))
+    }
+    if (timeInfo.depthOfField > 0) {
+      withErrorScopes(ctx.device, "dof", () => this.#renderDofPass(encoder, ctx))
     }
 
     if (this.#renderTargets && this.#postprocessBg) {

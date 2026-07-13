@@ -631,6 +631,35 @@ export function createAllPipelines(device, presentationFormat) {
     primitive: { topology: "triangle-list" },
   })
 
+  // Depth of Field (half-resolution)
+  // ################################
+
+  passLayouts.dofCoc = device.createBindGroupLayout({
+    label: "dof coc pass",
+    entries: [uniform(0, F), tex2d(1, F), texDepth(2, F), tex2d(3, F), samp(4, F), tex2d(5, F)],
+  })
+
+  pipelines.dofCoc = device.createRenderPipeline({
+    label: "dof-coc",
+    layout: pLayout(emptyLayout, passLayouts.dofCoc),
+    vertex: vs("dof-coc.wgsl"),
+    fragment: fs("dof-coc.wgsl", [{ format: "rgba16float" }]),
+    primitive: { topology: "triangle-list" },
+  })
+
+  passLayouts.dofBlur = device.createBindGroupLayout({
+    label: "dof blur pass",
+    entries: [uniform(0, F), tex2d(1, F), samp(2, F)],
+  })
+
+  pipelines.dofBlur = device.createRenderPipeline({
+    label: "dof-blur",
+    layout: pLayout(emptyLayout, passLayouts.dofBlur),
+    vertex: vs("dof-blur.wgsl"),
+    fragment: fs("dof-blur.wgsl", [{ format: "rgba16float" }]),
+    primitive: { topology: "triangle-list" },
+  })
+
   // Post-Process
   // ############
 
@@ -653,6 +682,7 @@ export function createAllPipelines(device, presentationFormat) {
       uniform(13, F),
       tex3d(14, F),
       samp(15, F),
+      tex2d(16, F),
     ],
   })
 

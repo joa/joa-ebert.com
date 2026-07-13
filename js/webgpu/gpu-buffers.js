@@ -469,6 +469,10 @@ export function createRenderTargets(gpu, width, height) {
     bloomExtract: makeRT(hw, hh, bloomFormat),
     bloomMips,
     godRay: makeRT(hw, hh),
+    // Half-res DoF: signed-CoC downsample → bokeh gather. rgba16float holds the
+    // signed CoC (and unclamped colour) without banding.
+    dofDown: makeRT(hw, hh, "rgba16float"),
+    dofBlur: makeRT(hw, hh, "rgba16float"),
     ssao: makeRT(ssaoW, ssaoH),
     ssaoPrev: makeRT(ssaoW, ssaoH),
     ssaoBlur: S.lowSpec ? null : makeRT(width, height),

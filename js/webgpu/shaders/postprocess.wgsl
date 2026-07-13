@@ -88,6 +88,7 @@ struct FogUniforms {
 @group(1) @binding(13) var<uniform> fog: FogUniforms;
 @group(1) @binding(14) var ppNoiseTex: texture_3d<f32>;
 @group(1) @binding(15) var ppNoiseSampler: sampler;
+@group(1) @binding(16) var dofBlurTex: texture_2d<f32>;
 
 struct FullscreenVertexOutput {
   @builtin(position) position: vec4f,
@@ -236,48 +237,6 @@ fn ppLoadScene(uv: vec2f) -> vec4f {
 
 fn ppLoadAlbedo(uv: vec2f) -> vec4f {
   return textureSampleLevel(gAlbedoTex, gAlbedoSampler, uv, 0.0);
-}
-
-fn hexBokeh(uv: vec2f, resolution: vec2f, sharpColor: vec3f) -> vec3f {
-  let raw = ppLoadDepth(uv);
-  if (raw >= 0.9999) { return sharpColor; }
-  if (i32(round(ppLoadAlbedo(uv).a * 3.0)) == 3) { return sharpColor; }
-  let zCenter = lineariseDepth(raw);
-  let coc = cocFromDepth(zCenter);
-  if (coc < 0.005) { return sharpColor; }
-
-  let pixelSize = 1.0 / resolution;
-  let radius = coc * 8.0;
-  let dir0 = vec2f(1.0, 0.0);
-  let dir1 = vec2f(0.5, 0.866);
-  let dir2 = vec2f(-0.5, 0.866);
-
-  var col = vec3f(0.0);
-  var total: f32 = 0.0;
-  let depthTol = max(zCenter * 0.3, 0.5);
-
-  for (var r: f32 = 1.0; r <= 8.0; r += 1.0) {
-    let off = pixelSize * radius * (r / 8.0);
-    var taps: array<vec2f, 6>;
-    taps[0] = uv + dir0 * off;
-    taps[1] = uv - dir0 * off;
-    taps[2] = uv + dir1 * off;
-    taps[3] = uv - dir1 * off;
-    taps[4] = uv + dir2 * off;
-    taps[5] = uv - dir2 * off;
-    for (var j: i32 = 0; j < 6; j++) {
-      let tapRaw = ppLoadDepth(taps[j]);
-      let tapZ = select(lineariseDepth(tapRaw), frame.far, tapRaw >= 0.9999);
-      let tapCoC = cocFromDepth(tapZ);
-      let scatter = smoothstep(0.0, 1.0, tapCoC * 8.0 / max(r, 1.0));
-      let depthW = select(1.0, scatter, tapZ < zCenter - depthTol);
-      let w = depthW / r;
-      col += ppLoadScene(taps[j]).rgb * w;
-      total += w;
-    }
-  }
-  col /= max(total, 0.001);
-  return mix(sharpColor, col, min(coc * 3.0, 1.0));
 }
 
 // Utility
@@ -477,44 +436,52 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     sharp = ppLoadScene(uv);
   }
 
-  // 2. DoF + chromatic aberration
-  var color: vec3f;
+  // 2. DoF composite + chromatic aberration
+  // The half-res DoF pass (dof-coc → dof-blur) produced a blurred colour and a
+  // blend alpha (own blur ∪ foreground bleed). Composite it over the sharp scene;
+  // birds stay crisp. Bilinear upsample of the half-res target is smooth.
+  // SSAO is baked into the DoF blur (dof-coc), so apply it to the sharp path
+  // here and composite; a naive full-res multiply after DoF put sharp AO on top
+  // of blurred grass.
+  let ao = mix(1.0, textureSampleLevel(ssaoTex, ssaoSampler, uv, 0.0).r, pp.ssaoIntensity);
+  let sharpAO = sharp.rgb * ao;
+  var color = sharpAO;
+  var dofBlurAmt = 0.0;
   if (pp.depthOfField > 0.0) {
-    if (pp.chromaticAberration > 0.0 && !isBird) {
-      let dist = uv - 0.5;
-      let amount = pp.chromaticAberration * dot(dist, dist);
-      var sharpR: vec4f;
-      var sharpB: vec4f;
-      if (doFXAA) {
-        sharpR = fxaa(uv + vec2f(amount, 0.0), frame.resolution);
-        sharpB = fxaa(uv - vec2f(amount, 0.0), frame.resolution);
-      } else {
-        sharpR = ppLoadScene(uv + vec2f(amount, 0.0));
-        sharpB = ppLoadScene(uv - vec2f(amount, 0.0));
-      }
-      color = hexBokeh(uv, frame.resolution, sharp.rgb);
-      color.r = hexBokeh(uv + vec2f(amount, 0.0), frame.resolution, sharpR.rgb).r;
-      color.b = hexBokeh(uv - vec2f(amount, 0.0), frame.resolution, sharpB.rgb).b;
-    } else {
-      color = hexBokeh(uv, frame.resolution, sharp.rgb);
-    }
-  } else {
-    color = sharp.rgb;
-    if (pp.chromaticAberration > 0.0 && !isBird) {
-      let dist = uv - 0.5;
-      let amount = pp.chromaticAberration * dot(dist, dist);
-      if (doFXAA) {
-        color.r = fxaa(uv + vec2f(amount, 0.0), frame.resolution).r;
-        color.b = fxaa(uv - vec2f(amount, 0.0), frame.resolution).b;
-      } else {
-        color.r = ppLoadScene(uv + vec2f(amount, 0.0)).r;
-        color.b = ppLoadScene(uv - vec2f(amount, 0.0)).b;
-      }
-    }
+    // Half-res DoF: dof.rgb is the near-field blur, dof.a is how much near blur
+    // covers this pixel. Applied to birds too — they're excluded from the CoC so
+    // an isolated bird has dof.a = 0 (stays sharp), but a bird *behind* near grass
+    // must be covered by the grass smear rather than punching through it.
+    let dof = textureSampleLevel(dofBlurTex, sceneSampler, uv, 0.0);
+    color = mix(sharpAO, dof.rgb, dof.a);
+    dofBlurAmt = dof.a;
+  }
+  // Lateral chromatic aberration: shift R/B toward the frame edge. Suppressed
+  // where the DoF blur is active — the foreground smear lands on sky-depth pixels
+  // (coc ≈ 0), so without the (1 − dofBlurAmt) gate CA fringes the smeared blade
+  // edges cyan/magenta. It only belongs on the sharp, in-focus parts of the frame.
+  if (pp.chromaticAberration > 0.0 && !isBird) {
+    let dist = uv - 0.5;
+    let amount = pp.chromaticAberration * dot(dist, dist);
+    let caW = clamp(1.0 - cocFromDepth(lineariseDepth(rawDepthMain)) * 2.0, 0.0, 1.0) * (1.0 - dofBlurAmt);
+    color.r = mix(color.r, ppLoadScene(uv + vec2f(amount, 0.0)).r * ao, caW);
+    color.b = mix(color.b, ppLoadScene(uv - vec2f(amount, 0.0)).b * ao, caW);
   }
 
-  // 3. SSAO
-  color *= mix(1.0, textureSampleLevel(ssaoTex, ssaoSampler, uv, 0.0).r, pp.ssaoIntensity);
+  // SSAO already applied above (baked into the DoF blur; multiplied onto the
+  // sharp path before compositing).
+
+  // Geometry the DoF has blurred away (birds, text, grass) has a composited colour
+  // that no longer matches its stored sharp depth. Aerial perspective keys off that
+  // sharp depth, so on a blurred blob it tints only the finite-depth core — not the
+  // sky around it — redrawing the sharp silhouette on top of the smooth blur.
+  // `dofOverride` ramps 0→1 as the blur takes over (past half coverage); aerial
+  // fades its contribution out by it. When DoF is off, dofBlurAmt = 0 → override 0
+  // and the default look is unchanged. (Fog stays on the true sharp depth: grass and
+  // low text sit *inside* the fog layer, so pushing their blurred depth to the far
+  // plane over-fogged them into bright banding + dark streaks; birds fly above the
+  // fog ceiling where fogDensityAt ≈ 0, so they need no sky-override there.)
+  let dofOverride = smoothstep(0.5, 1.0, dofBlurAmt);
 
   // 4. Bloom
   color += textureSampleLevel(bloomTex, bloomSampler, uv, 0.0).rgb * pp.bloomIntensity;
@@ -526,8 +493,7 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   if (fog.fogIntensity > 0.0) {
     var fogVal: vec4f;
     if (fog.fogQuality > 0.5) {
-      let depthForWorld = select(rawDepthMain, 0.9998, isSky);
-      fogVal = ppRayMarchFog(frame.cameraPosition, worldPosFromDepth(uv, depthForWorld), isSky, uv);
+      fogVal = ppRayMarchFog(frame.cameraPosition, worldPosFromDepth(uv, rawDepthMain), isSky, uv);
     } else {
       let worldPos = worldPosFromDepth(uv, rawDepthMain);
       let transmission = exp(-fogOpticalDepth(frame.cameraPosition, worldPos));
@@ -548,7 +514,9 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     // AgX-safe cyan-blue base (pale near-white blues rotate to mauve under AgX);
     // fogColor kept at a low weight so time-of-day tint survives without purpling.
     let aerialColor = mix(vec3f(0.42, 0.58, 0.78), pp.fogColor, 0.15);
-    color = mix(color, aerialColor, haze * mix(0.06, 0.65, clamp(frame.sunAboveHorizon * 2.5, 0.0, 1.0)));
+    let strength = haze * mix(0.06, 0.65, clamp(frame.sunAboveHorizon * 2.5, 0.0, 1.0));
+    // Fade out on blurred pixels so the sharp silhouette isn't re-imposed.
+    color = mix(color, aerialColor, strength * (1.0 - dofOverride));
   }
 
   // 7.5. Rainbow
