@@ -291,7 +291,7 @@ export class Camera {
       if (da < -180) da += 360
       const db = e.beta - this.#gyroRef.beta
       this.#gyroYaw = -da * (Math.PI / 180)
-      this.#gyroPitch = Math.max(-HALF_PI, Math.min(HALF_PI, db * (Math.PI / 180) * 0.5))
+      this.#gyroPitch = Math.max(-HALF_PI, Math.min(HALF_PI, -db * (Math.PI / 180) * 0.5))
     }
 
     if (
