@@ -58,6 +58,8 @@ const PARAMS = [
   { key: "cgLift", label: "Color Lift", type: "color" },
   { key: "grassHeightFactor", label: "Grass Height", min: 0, max: 8, step: 0.1 },
   { key: "grassWidthFactor", label: "Grass Width", min: 0, max: 8, step: 0.1 },
+  { key: "flowerSway", label: "Flower Sway", min: 0, max: 3, step: 0.05 },
+  { key: "flowerAlpha", label: "Flower Alpha Cutoff", min: 0, max: 1, step: 0.01 },
   { key: "grassCulling", label: "Grass Frustum Culling", type: "bool" },
   { key: "shadowGrassDensity", label: "Shadow Grass Density", min: 0.25, max: 1, step: 0.05 },
   { key: "dewAmount", label: "Dew Amount", min: 0, max: 1, step: 0.01 },
@@ -83,11 +85,19 @@ const PARAMS = [
   { key: "chemtrailWidth", label: "Chemtrail Width", min: 0.003, max: 0.06, step: 0.001 },
   { key: "fireflyIntensity", label: "Firefly Intensity", min: 0, max: 3, step: 0.05 },
   { key: "fireflyLightRadius", label: "Firefly Light Radius", min: 0.5, max: 12, step: 0.25 },
+  { key: "flyIntensity", label: "Fly Intensity", min: 0, max: 3, step: 0.05 },
+  { key: "beeIntensity", label: "Bee Intensity", min: 0, max: 3, step: 0.05 },
   { key: "sparkleEnabled", label: "Text Sparkles", type: "bool" },
   { key: "sparkleIntensity", label: "Sparkle Intensity", min: 0, max: 3, step: 0.05 },
   { key: "sparkleDensity", label: "Sparkle Density", min: 0.5, max: 20, step: 0.5 },
   { key: "sparkleSharpness", label: "Sparkle Sharpness", min: 0.1, max: 5, step: 0.05 },
   { key: "sparkleSpeed", label: "Sparkle Speed", min: 0.1, max: 5, step: 0.1 },
+  { key: "emissiveIntensity", label: "Bike Lamp Core", min: 0, max: 10, step: 0.1 },
+  { key: "bikeLightCast", label: "Bike Light Cast", min: 0, max: 4, step: 0.05 },
+  { key: "bikeLightCastRadius", label: "Bike Light Radius", min: 0.5, max: 12, step: 0.25 },
+  { key: "bikeLightGlow", label: "Bike Light Glow", min: 0, max: 3, step: 0.05 },
+  { key: "bikeLightFlare", label: "Bike Light Flare", min: 0, max: 3, step: 0.05 },
+  { key: "bikeLightBeam", label: "Bike Light Beam", min: 0, max: 4, step: 0.05 },
 ]
 
 const DEBUG_MODES = [

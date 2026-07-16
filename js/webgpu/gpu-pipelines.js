@@ -7,7 +7,10 @@
 
 import SHADERS from "wgsl-shaders-bundle.js"
 import S from "../shared/settings.js"
-import { bloomChainFormat } from "./gpu-buffers.js"
+import { bloomChainFormat, SCENE_FORMAT } from "./gpu-buffers.js"
+
+// Re-exported so event modules (which draw into the scene pass) can match it.
+export { SCENE_FORMAT }
 
 // Visibility shorthand
 // ####################
@@ -118,6 +121,27 @@ const GRASS_GPASS_VERTEX_BUFFERS = [
   },
 ]
 
+// Flower impostor: geometry (position + uv + card normal) and per-instance
+// (position + packed data: rotation, scale, kind, seed).
+const FLOWER_VERTEX_BUFFERS = [
+  {
+    arrayStride: 28,
+    attributes: [
+      { shaderLocation: 0, offset: 0, format: "float32x3" },
+      { shaderLocation: 1, offset: 12, format: "float32x2" },
+      { shaderLocation: 2, offset: 20, format: "float32x2" },
+    ],
+  },
+  {
+    arrayStride: 28,
+    stepMode: "instance",
+    attributes: [
+      { shaderLocation: 3, offset: 0, format: "float32x3" },
+      { shaderLocation: 4, offset: 12, format: "float32x4" },
+    ],
+  },
+]
+
 const GROUND_VERTEX_BUFFERS = [
   {
     arrayStride: 12,
@@ -145,6 +169,15 @@ const SHADOW_TEXT_VERTEX_BUFFERS = [
     arrayStride: 12,
     attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
   },
+]
+
+// position (vec3) + normal (vec3) + colour (vec3) + material (vec2: rough, metal)
+const BIKE_VERTEX_BUFFERS = [
+  { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+  { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+  { arrayStride: 12, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x3" }] },
+  { arrayStride: 8, attributes: [{ shaderLocation: 3, offset: 0, format: "float32x2" }] },
+  { arrayStride: 4, attributes: [{ shaderLocation: 4, offset: 0, format: "float32" }] },
 ]
 
 const BIRD_VERTEX_BUFFERS = [
@@ -212,6 +245,24 @@ const FIREFLY_VERTEX_BUFFERS = [
     arrayStride: 4,
     stepMode: "instance",
     attributes: [{ shaderLocation: 1, offset: 0, format: "float32" }],
+  },
+]
+
+const INSECT_VERTEX_BUFFERS = [
+  {
+    arrayStride: 12,
+    stepMode: "instance",
+    attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
+  },
+  {
+    arrayStride: 4,
+    stepMode: "instance",
+    attributes: [{ shaderLocation: 1, offset: 0, format: "float32" }],
+  },
+  {
+    arrayStride: 4,
+    stepMode: "instance",
+    attributes: [{ shaderLocation: 2, offset: 0, format: "float32" }],
   },
 ]
 
@@ -298,6 +349,23 @@ export function createAllPipelines(device, presentationFormat) {
 
   // grassDense uses the same pipeline — different buffers at draw time
 
+  // Flowers
+  // #######
+
+  passLayouts.flower = device.createBindGroupLayout({
+    label: "flower pass",
+    entries: [uniform(0, VF), tex2d(1, V), samp(2, V)],
+  })
+
+  pipelines.flower = device.createRenderPipeline({
+    label: "flower",
+    layout: pLayout(frameLayout, passLayouts.flower),
+    vertex: vs("flower.wgsl", FLOWER_VERTEX_BUFFERS),
+    fragment: fs("flower.wgsl", MRT_TARGETS),
+    depthStencil: DEPTH_WRITE,
+    primitive: { topology: "triangle-list", cullMode: "none" },
+  })
+
   // Shadow (grass)
   // ##############
 
@@ -356,6 +424,22 @@ export function createAllPipelines(device, presentationFormat) {
     primitive: { topology: "triangle-list" },
   })
 
+  // Bike
+  // ####
+  //
+  // GLB road bike. Same frame/empty/empty/object layout as text, but with
+  // per-vertex colour + material streams. Blender's mirrored parts flip winding,
+  // so cull nothing.
+
+  pipelines.bike = device.createRenderPipeline({
+    label: "bike",
+    layout: pLayout(frameLayout, emptyLayout, emptyLayout, objectLayout),
+    vertex: vs("bike.wgsl", BIKE_VERTEX_BUFFERS),
+    fragment: fs("bike.wgsl", MRT_TARGETS),
+    depthStencil: DEPTH_WRITE,
+    primitive: { topology: "triangle-list", cullMode: "none" },
+  })
+
   // Bird
   // ####
 
@@ -371,6 +455,18 @@ export function createAllPipelines(device, presentationFormat) {
     fragment: fs("bird.wgsl", MRT_TARGETS),
     depthStencil: DEPTH_WRITE,
     primitive: { topology: "triangle-list" },
+  })
+
+  // Bird Shadow
+  // ###########
+
+  pipelines.birdShadow = device.createRenderPipeline({
+    label: "bird-shadow",
+    layout: pLayout(frameLayout, passLayouts.bird),
+    vertex: vs("bird-shadow.wgsl", BIRD_VERTEX_BUFFERS),
+    fragment: fs("bird-shadow.wgsl", []),
+    depthStencil: DEPTH_WRITE_SHADOW,
+    primitive: { topology: "triangle-list", cullMode: "none" },
   })
 
   // Deferred Lighting
@@ -400,7 +496,7 @@ export function createAllPipelines(device, presentationFormat) {
     label: "deferred-lighting",
     layout: pLayout(frameLayout, passLayouts.deferredLighting),
     vertex: vs("deferred-lighting.wgsl"),
-    fragment: fs("deferred-lighting.wgsl", [{ format: "rgba8unorm" }]),
+    fragment: fs("deferred-lighting.wgsl", [{ format: SCENE_FORMAT }]),
     primitive: { topology: "triangle-list" },
   })
 
@@ -410,7 +506,7 @@ export function createAllPipelines(device, presentationFormat) {
     label: "deferred-lighting-discard",
     layout: pLayout(frameLayout, passLayouts.deferredLighting),
     vertex: vs("deferred-lighting.wgsl"),
-    fragment: fsc("deferred-lighting.wgsl", [{ format: "rgba8unorm" }], { skipBackground: 1 }),
+    fragment: fsc("deferred-lighting.wgsl", [{ format: SCENE_FORMAT }], { skipBackground: 1 }),
     primitive: { topology: "triangle-list" },
   })
 
@@ -434,7 +530,31 @@ export function createAllPipelines(device, presentationFormat) {
     label: "firefly-lights",
     layout: pLayout(frameLayout, passLayouts.fireflyLights),
     vertex: vs("firefly-lights.wgsl"),
-    fragment: fs("firefly-lights.wgsl", [{ format: "rgba8unorm", blend: ADDITIVE_BLEND }]),
+    fragment: fs("firefly-lights.wgsl", [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }]),
+    primitive: { topology: "triangle-list" },
+  })
+
+  // Bike Lights (deferred additive) — head/tail lamps cast onto the scene
+  // ###################################################################
+
+  passLayouts.bikeLights = device.createBindGroupLayout({
+    label: "bike lights pass",
+    entries: [
+      uniform(0, F),
+      tex2d(1, F),
+      sampNonFiltering(2, F),
+      tex2d(3, F),
+      sampNonFiltering(4, F),
+      texDepth(5, F),
+      sampNonFiltering(6, F),
+    ],
+  })
+
+  pipelines.bikeLights = device.createRenderPipeline({
+    label: "bike-lights",
+    layout: pLayout(frameLayout, passLayouts.bikeLights),
+    vertex: vs("bike-lights.wgsl"),
+    fragment: fs("bike-lights.wgsl", [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }]),
     primitive: { topology: "triangle-list" },
   })
 
@@ -450,7 +570,7 @@ export function createAllPipelines(device, presentationFormat) {
     label: "sky",
     layout: pLayout(frameLayout, passLayouts.sky),
     vertex: vs("sky.wgsl"),
-    fragment: fs("sky.wgsl", [{ format: "rgba8unorm" }]),
+    fragment: fs("sky.wgsl", [{ format: SCENE_FORMAT }]),
     depthStencil: DEPTH_TEST_LEQUAL,
     primitive: { topology: "triangle-list" },
   })
@@ -462,7 +582,7 @@ export function createAllPipelines(device, presentationFormat) {
     label: "sky-no-depth",
     layout: pLayout(frameLayout, passLayouts.sky),
     vertex: vs("sky.wgsl"),
-    fragment: fs("sky.wgsl", [{ format: "rgba8unorm" }]),
+    fragment: fs("sky.wgsl", [{ format: SCENE_FORMAT }]),
     primitive: { topology: "triangle-list" },
   })
 
@@ -478,7 +598,7 @@ export function createAllPipelines(device, presentationFormat) {
     label: "rain",
     layout: pLayout(frameLayout, passLayouts.rain),
     vertex: vs("rain.wgsl", RAIN_VERTEX_BUFFERS),
-    fragment: fs("rain.wgsl", [{ format: "rgba8unorm", blend: ALPHA_BLEND }]),
+    fragment: fs("rain.wgsl", [{ format: SCENE_FORMAT, blend: ALPHA_BLEND }]),
     depthStencil: DEPTH_TEST_ONLY,
     primitive: { topology: "line-list" },
   })
@@ -495,7 +615,7 @@ export function createAllPipelines(device, presentationFormat) {
     label: "particle",
     layout: pLayout(frameLayout, passLayouts.particle),
     vertex: vs("particle.wgsl", PARTICLE_VERTEX_BUFFERS),
-    fragment: fs("particle.wgsl", [{ format: "rgba8unorm", blend: ADDITIVE_BLEND }]),
+    fragment: fs("particle.wgsl", [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }]),
     depthStencil: DEPTH_TEST_ONLY,
     primitive: { topology: "triangle-strip", stripIndexFormat: "uint32" },
   })
@@ -512,7 +632,24 @@ export function createAllPipelines(device, presentationFormat) {
     label: "firefly-sprite",
     layout: pLayout(frameLayout, passLayouts.fireflySprite),
     vertex: vs("firefly.wgsl", FIREFLY_VERTEX_BUFFERS),
-    fragment: fs("firefly.wgsl", [{ format: "rgba8unorm", blend: ADDITIVE_BLEND }]),
+    fragment: fs("firefly.wgsl", [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }]),
+    depthStencil: DEPTH_TEST_ONLY,
+    primitive: { topology: "triangle-strip", stripIndexFormat: "uint32" },
+  })
+
+  // Insects (flies + bees)
+  // ######################
+
+  passLayouts.insect = device.createBindGroupLayout({
+    label: "insect pass",
+    entries: [uniform(0, VF)],
+  })
+
+  pipelines.insect = device.createRenderPipeline({
+    label: "insect",
+    layout: pLayout(frameLayout, passLayouts.insect),
+    vertex: vs("insect.wgsl", INSECT_VERTEX_BUFFERS),
+    fragment: fs("insect.wgsl", [{ format: SCENE_FORMAT, blend: ALPHA_BLEND }]),
     depthStencil: DEPTH_TEST_ONLY,
     primitive: { topology: "triangle-strip", stripIndexFormat: "uint32" },
   })
@@ -806,6 +943,14 @@ export function createPassBindGroups(device, layouts, textures, views, samplers,
     ])
   }
 
+  if (layouts.flower && uniformBuffers.flower) {
+    groups.flower = bg(device, layouts.flower, "flower pass", [
+      [0, buf(uniformBuffers.flower)],
+      [1, view(textures.windNoise)],
+      [2, samplers.linearRepeat],
+    ])
+  }
+
   if (layouts.shadow && uniformBuffers.shadow) {
     groups.shadow = bg(device, layouts.shadow, "shadow pass", [
       [0, buf(uniformBuffers.shadow)],
@@ -848,6 +993,18 @@ export function createPassBindGroups(device, layouts, textures, views, samplers,
   if (layouts.fireflyLights && uniformBuffers.fireflyLights) {
     groups.fireflyLights = bg(device, layouts.fireflyLights, "firefly lights pass", [
       [0, buf(uniformBuffers.fireflyLights)],
+      [1, view(textures.gAlbedo)],
+      [2, samplers.nearestClamp],
+      [3, view(textures.gNormal)],
+      [4, samplers.nearestClamp],
+      [5, depthSampleView],
+      [6, samplers.nearestClamp],
+    ])
+  }
+
+  if (layouts.bikeLights && uniformBuffers.bikeLights) {
+    groups.bikeLights = bg(device, layouts.bikeLights, "bike lights pass", [
+      [0, buf(uniformBuffers.bikeLights)],
       [1, view(textures.gAlbedo)],
       [2, samplers.nearestClamp],
       [3, view(textures.gNormal)],

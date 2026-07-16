@@ -51,8 +51,8 @@ const DEVICES = [
 // The compact (blog) scene is theme-driven, not clock-driven: one capture per
 // theme at the renderer's compactHourForDark hours (see js/webgpu/renderer.js).
 const COMPACT_SHOTS = [
-  { theme: "light", hour: 12 },
-  { theme: "dark", hour: 21.9 },
+  { theme: "light", hour: 9.5 },
+  { theme: "dark", hour: 3 },
 ]
 
 const HARNESS_PATH = "/__placeholders"

@@ -128,6 +128,15 @@ fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let downAO = 1.0 - max(-flatN.y, 0.0) * 0.30;
   albedo *= downAO;
 
+  // Fake light transmission: green light bounced up off the surrounding meadow
+  // spills onto the lowest band of the letters — the radiosity color-bleed the
+  // deferred pass can't produce. Broader and softer than the grime band; bounced
+  // light reaches higher than caked-on dirt. A near-luminance-neutral hue push
+  // (green up, red/blue down) so it tints rather than darkens.
+  let bounce = 1.0 - smoothstep(0.0, 2.2, wp.y);
+  let grassTint = vec3f(0.85, 1.06, 0.8);
+  albedo = mix(albedo, albedo * grassTint, bounce * 0.5);
+
   // Micro-relief bump: perturb the flat face normal along the noise gradient so
   // grazing sunlight rakes across surface imperfections instead of a mirror-flat
   // slab. Forward differences on the same fbm field.

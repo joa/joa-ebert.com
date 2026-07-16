@@ -69,7 +69,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let quadUV = QUAD_UV[input.vertexIndex];
   let viewPos = frame.viewMatrix * vec4f(input.instancePosition, 1.0);
   let dist = max(length(viewPos.xyz), 0.001);
-  let pointSize = clamp(200.0 / dist, 2.0, 28.0);
+  // Sizes authored against a 900px reference height and scaled by the viewport
+  // so sprites hold a constant fraction of the frame across compact/expanded.
+  let resScale = frame.resolution.y / 900.0;
+  let pointSize = clamp(200.0 / dist, 2.0, 28.0) * resScale;
   let right = vec3f(frame.viewMatrix[0][0], frame.viewMatrix[1][0], frame.viewMatrix[2][0]);
   let up = vec3f(frame.viewMatrix[0][1], frame.viewMatrix[1][1], frame.viewMatrix[2][1]);
   let pixelSize = pointSize / frame.resolution.y;

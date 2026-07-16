@@ -52,7 +52,9 @@ struct PostProcessUniforms {
   vignetteStrength: f32,
   rainIntensity: f32,
   rainbowIntensity: f32,
-  pad: vec3f,
+  bikeParams: vec4f,        // x = light count, y = glow intensity, z = flare intensity
+  bikePos: array<vec4f, 2>, // xyz = world position of each bike lamp
+  bikeColor: array<vec4f, 2>, // rgb = radiant colour of each lamp
 }
 
 struct FogUniforms {
@@ -69,6 +71,9 @@ struct FogUniforms {
   fireflyLightRadius: f32,
   fogPad: vec2f,
   fireflyData: array<vec4f, 32>,
+  bikePos: vec4f,   // xyz = headlight world pos, w = reach (0 = off)
+  bikeColor: vec4f, // rgb = beam colour, w = fog scatter intensity
+  bikeDir: vec4f,   // xyz = world beam axis (normalised), w = cos(cone half-angle)
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -314,6 +319,90 @@ fn lensFlare(uv: vec2f) -> vec3f {
   return result * baseI;
 }
 
+// Bike Lamp Glow + Lens Flare
+//
+// The head/tail lamps are point sources at known world positions. Project each
+// to screen space, test whether the lamp itself is un-occluded (its own emissive
+// surface writes depth, so a depth read at the lamp's screen point that is nearer
+// than the lamp means something is in front of it), then paint a soft volumetric
+// halo (glow) and a classic ghost/streak lens flare. Both are added after the
+// tonemap so the sources stay punchy against a dark night sky.
+
+fn bikeLampScreen(i: i32) -> vec3f {
+  // Returns (screenUV.xy, rawDepth). z < 0 signals "behind camera / off screen".
+  let clip = frame.viewProjectionMatrix * vec4f(pp.bikePos[i].xyz, 1.0);
+  if (clip.w <= 0.0) {
+    return vec3f(0.0, 0.0, -1.0);
+  }
+  let ndc = clip.xyz / clip.w;
+  return vec3f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, ndc.z);
+}
+
+fn bikeLampVisible(spos: vec2f, lampDepth: f32) -> f32 {
+  let occDepth = ppLoadDepth(clamp(spos, vec2f(0.0), vec2f(1.0)));
+  // Visible if nothing sits in front of the lamp (or the sample is open sky).
+  return select(0.0, 1.0, occDepth >= lampDepth - 0.0015 || occDepth >= 0.9999);
+}
+
+fn bikeLightGlow(uv: vec2f) -> vec3f {
+  let count = i32(pp.bikeParams.x);
+  if (count == 0 || pp.bikeParams.y <= 0.0) {
+    return vec3f(0.0);
+  }
+  let aspect = frame.resolution.x / frame.resolution.y;
+  var glow = vec3f(0.0);
+  for (var i = 0; i < count; i++) {
+    let s = bikeLampScreen(i);
+    if (s.z < 0.0) { continue; }
+    let vis = bikeLampVisible(s.xy, s.z);
+    // Scattered light lingers faintly even when the lamp edges behind geometry.
+    let atten = mix(0.15, 1.0, vis);
+    let d = (uv - s.xy) * vec2f(aspect, 1.0);
+    let r = length(d);
+    let core = exp(-r * r / (0.010 * 0.010)) * 0.6; // tight bright centre
+    let halo = exp(-r / 0.045) * 0.14;              // soft falloff
+    glow += pp.bikeColor[i].rgb * (core + halo) * atten;
+  }
+  return glow * pp.bikeParams.y;
+}
+
+fn bikeLensFlare(uv: vec2f) -> vec3f {
+  let count = i32(pp.bikeParams.x);
+  if (count == 0 || pp.bikeParams.z <= 0.0) {
+    return vec3f(0.0);
+  }
+  let aspect = frame.resolution.x / frame.resolution.y;
+  let auv = (uv - 0.5) * vec2f(aspect, 1.0);
+  var flare = vec3f(0.0);
+  for (var i = 0; i < count; i++) {
+    let s = bikeLampScreen(i);
+    if (s.z < 0.0 || s.x < -0.2 || s.x > 1.2 || s.y < -0.2 || s.y > 1.2) { continue; }
+    if (bikeLampVisible(s.xy, s.z) < 0.5) { continue; }
+    let col = pp.bikeColor[i].rgb;
+    let apos = (s.xy - 0.5) * vec2f(aspect, 1.0);
+    let toCenter = -apos; // lamp → screen centre; ghosts march along this axis
+
+    // Ghosts: inter-element reflections spaced along the light-centre axis, each
+    // a small coloured disc with a per-ghost hue rotation.
+    for (var k = 1; k <= 4; k++) {
+      let gpos = apos + toCenter * (f32(k) * 0.55);
+      let gd = length(auv - gpos);
+      let gcol = mix(col, col.bgr, f32(k) / 4.0);
+      flare += gcol * exp(-gd * gd * 700.0) * (0.10 / f32(k));
+    }
+
+    // Faint halo ring around the point opposite the lamp (through screen centre).
+    let haloPos = apos + toCenter * 2.0;
+    let hr = length(auv - haloPos);
+    flare += col * exp(-pow((hr - 0.16) * 26.0, 2.0)) * 0.04;
+
+    // Anamorphic horizontal streak lancing through the lamp itself.
+    let streak = exp(-pow((uv.y - s.y) * aspect, 2.0) * 4000.0) * exp(-abs(uv.x - s.x) * 9.0);
+    flare += col * streak * 0.18;
+  }
+  return flare * pp.bikeParams.z;
+}
+
 // Fog (inlined from fog pass)
 
 fn fogNoise3(p: vec3f) -> f32 {
@@ -411,6 +500,23 @@ fn ppRayMarchFog(camPos: vec3f, fragPos: vec3f, isSkyFog: bool, noiseUV: vec2f) 
           inScattered += transmittance * fireflyColor
                        * (atten * atten) * ffBright
                        * fog.fireflyFactor * sigma * stepSize;
+        }
+      }
+      // Headlight beam: a cone of scattered halogen light carving through the fog.
+      let bikeReach = fog.bikePos.w;
+      if (bikeReach > 0.0) {
+        let toL = fog.bikePos.xyz - pos;
+        let d = length(toL);
+        if (d < bikeReach) {
+          let Ld = toL / max(d, 1e-4);
+          let cd = dot(-Ld, fog.bikeDir.xyz);
+          let coneCos = fog.bikeDir.w;
+          let inner = mix(coneCos, 1.0, 0.35);
+          let spot = smoothstep(coneCos, inner, cd);
+          let atten = 1.0 - d / bikeReach;
+          inScattered += transmittance * fog.bikeColor.rgb
+                       * (atten * atten) * spot
+                       * fog.bikeColor.w * sigma * stepSize;
         }
       }
       transmittance *= stepT;
@@ -553,6 +659,8 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
 
   // Lens flare + film grain
   color += lensFlare(uv);
+  color += bikeLightGlow(uv);
+  color += bikeLensFlare(uv);
   color += (ppRand(uv + fract(frame.time * 1.618)) - 0.5) * pp.grainStrength * (1.0 - luma * 0.5);
 
   return vec4f(color, 1.0);

@@ -69,6 +69,7 @@ const TIME_SCALE: f32 = 0.0001;
 const MOON_RADIUS: f32 = 0.03162;
 const NOISE_WRAP: f32 = 32.0;
 const NOISE_WRAP_SCALE: vec3f = vec3f(NOISE_WRAP, NOISE_WRAP, NOISE_WRAP); // note: allows us to stretch clouds visually
+const CLOUD_OVERSHOOT: f32 = 0.2; // clouds spill this fraction of slab height past the base/top planes so the boundary isn't a flat wall
 
 struct SkyVertexOutput {
   @builtin(position) position: vec4f,
@@ -122,10 +123,17 @@ fn fbmDetail(p_in: vec3f) -> f32 {
 // Cloud volume
 
 fn cloudDensity(p: vec3f) -> f32 {
-  if (p.y < sky.cloudBase || p.y > sky.cloudTop) {
+  // Wobble the slab's base/top per column with slow, low-frequency noise so cloud
+  // bottoms undulate past the nominal cloudBase plane instead of shearing flat.
+  let margin = (sky.cloudTop - sky.cloudBase) * CLOUD_OVERSHOOT;
+  let wobble = (fbm5(p * (1.0 / 260.0) + vec3f(8.3, 0.0, 2.1)) - 0.47) * margin;
+  let slabBase = sky.cloudBase + wobble;
+  let slabTop = sky.cloudTop + wobble;
+
+  if (p.y < slabBase || p.y > slabTop) {
     return 0.0;
   }
-  let relH = (p.y - sky.cloudBase) / (sky.cloudTop - sky.cloudBase);
+  let relH = (p.y - slabBase) / (slabTop - slabBase);
   let vEnv = smoothstep(0.0, 0.15, relH) * smoothstep(1.0, 0.40, relH);
 
   var q = p * (1.0 / 45.0);
@@ -169,8 +177,9 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
     return vec4f(0.0);
   }
 
-  let tBot = (sky.cloudBase - rayOrigin.y) / rd.y;
-  let tTop = (sky.cloudTop - rayOrigin.y) / rd.y;
+  let slabMargin = (sky.cloudTop - sky.cloudBase) * CLOUD_OVERSHOOT;
+  let tBot = (sky.cloudBase - slabMargin - rayOrigin.y) / rd.y;
+  let tTop = (sky.cloudTop + slabMargin - rayOrigin.y) / rd.y;
   if (tBot < 0.0 && tTop < 0.0) {
     return vec4f(0.0);
   }
@@ -680,9 +689,11 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
     }
   }
 
-  // Sun disc + warm glow. Driven bright enough to clip the HDR ceiling so it
-  // blooms and reads as blinding, with a warm (never pink) core. Composited
-  // before the clouds below so overcast can occlude it.
+  // Sun disc + warm glow. The scene buffer is HDR (rgba16float), so the disc is
+  // driven far above 1.0 — near the top of the AgX tonemap's EV range (~16×) — so
+  // it survives tonemapping as a blinding white body and blooms hard, reading as
+  // the brightest source in frame. Warm (never pink) core. Composited before the
+  // clouds below so overcast can occlude it.
   let sunDirN = normalize(frame.sunDirection);
   let sunUpGate = smoothstep(-0.02, 0.10, sunDirN.y);
   if (sunUpGate > 0.0 && dir.y > -0.05) {
@@ -700,7 +711,7 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
     let glow = pow(sd, 800.0);                    // tight warm halo
     let coreCol = vec3f(1.0, 0.99, 0.95);
     let warmCol = vec3f(1.0, 0.86, 0.60);
-    let sunCol = coreCol * (disc * 6.0 + core * 3.0) + warmCol * glow * 0.5;
+    let sunCol = coreCol * (disc * 14.0 + core * 7.0) + warmCol * glow * 1.0;
     color += sunCol * sunUpGate;
   }
 

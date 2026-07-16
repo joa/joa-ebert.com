@@ -27,6 +27,7 @@ import {
   orthographicMatrixWebGPUInto,
   multiplyMM,
   multiplyMMInto,
+  multiplyMV,
   multiplyMVInto,
 } from "../shared/math-utils.js"
 import S from "../shared/settings.js"
@@ -42,12 +43,16 @@ import {
   initNoiseTextureAsync,
   initWindNoiseTexture,
   initGrassBuffers,
+  initFlowerBuffers,
   initGroundBuffers,
   initBirdBuffers,
   initTextBuffers,
+  initBikeBuffers,
   initRainBuffers,
   initParticleBuffers,
   initFireflyBuffers,
+  initFlyBuffers,
+  initBeeBuffers,
   createMountainHeightmap,
   createGroundHeightmap,
   createCloudShadowTexture,
@@ -58,6 +63,7 @@ import {
 import { GPUHeightmap, GrassTileWorker, writeFrameUniforms, updateBirdInstances } from "./gpu-updates.js"
 import { GpuProfiler } from "./gpu-profiler.js"
 import { GrassCuller } from "./grass-culler.js"
+import { FlowerField } from "../shared/flower-field.js"
 import {
   createAllPipelines,
   createPassBindGroups,
@@ -87,9 +93,20 @@ const NEAR = 0.01
 const FAR = 1000
 const MS_TO_SEC = 0.001
 const SHADOW_DISTANCE_WU = 40
+// Extends the shadow frustum's near-to-light bound so overhead casters (the bird
+// flock, up to ~35 wu altitude) fall inside the ortho volume instead of being
+// clipped by the near plane. A flat world-unit margin is a safe upper bound: the
+// actual light-space offset of a caster at height h is h * sun.y ≤ h.
+const OVERHEAD_CASTER_WU = 40
 const SUN_PROJECTION_WU = 1000
 const CLOUD_SHADOW_INTERVAL = S.lowSpec ? 15 : 7
 const LIGHTING_INTERVAL = S.lowSpec ? 13 : 4
+// Upper bound on how fast the CPU sim systems (wind, boids, effects) may run
+// when the day is fast-forwarded. The intro compresses ~24h into ~10s, so the
+// raw time scale peaks in the thousands — feeding that into the explicit-Euler
+// integrators would step positions kilometres per frame and blow them up. This
+// cap keeps a single step stable while still reading as a visibly racing flock.
+const MAX_SIM_TIME_SCALE = 20
 const FIREFLY_SLOTS = 32
 
 const UNIFORM_USAGE = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -154,6 +171,16 @@ const computeFireflyFactor = timeInfo => {
   return f * timeInfo.fireflyIntensity
 }
 
+// Daytime insect visibility in [0,1]. The complement of the firefly window:
+// out overnight, fades in at 6:00→6:30, full through the day, out at 18:00→18:30.
+const computeDayFactor = timeInfo => {
+  const t = timeInfo.timeOfDay
+  if (t < 6.0 || t >= 18.5) return 0
+  if (t < 6.5) return smoothstep((t - 6.0) * 2.0)
+  if (t >= 18.0) return smoothstep(1 - (t - 18.0) * 2.0)
+  return 1
+}
+
 const isNight = timeInfo => {
   const t = timeInfo.timeOfDay ?? 12
   return t >= 18.5 || t < 6
@@ -191,12 +218,16 @@ export class Renderer {
   // Geometry buffers
   // ################
   #grassBuffers = null
+  #flowerBuffers = null
   #groundBuffers = null
   #birdBuffers = null
   #textBuffers = null
+  #bikeBuffers = null
   #rainBuffers = null
   #particleBuffers = null
   #fireflyBuffers = null
+  #flyBuffers = null
+  #beeBuffers = null
 
   // Textures & render targets
   // #########################
@@ -220,10 +251,13 @@ export class Renderer {
   #frameUniformBuffer = null
   #shadowUniformBuffer = null
   #textObjectUniformBuffer = null
+  #bikeObjectUniformBuffer = null
   #grassUniformBuffer = null
+  #flowerUniformBuffer = null
   #birdUniformBuffer = null
   #deferredLightingBuffer = null
   #fireflyUniformBuffer = null
+  #bikeLightsUniformBuffer = null
   #ssaoUniformBuffer = null
   #bloomExtractUniformBuffer = null
   #bloomDownUniformBuffers = null
@@ -235,6 +269,8 @@ export class Renderer {
   #fogUniformBuffer = null
   #particleUniformBuffer = null
   #fireflySpriteUniformBuffer = null
+  #flyUniformBuffer = null
+  #beeUniformBuffer = null
   #postprocessUniformBuffer = null
   #cloudShadowUniformBuffer = null
 
@@ -243,6 +279,7 @@ export class Renderer {
   #frameBindGroup = null
   #shadowPassBindGroup = null
   #textObjectBindGroup = null
+  #bikeObjectBindGroup = null
   #cloudShadowBindGroup = null
   #passBindGroups = null
   #ssaoBgs = null
@@ -255,6 +292,8 @@ export class Renderer {
   #dofBlurBg = null
   #particleBg = null
   #fireflySpriteBg = null
+  #flyBg = null
+  #beeBg = null
   #postprocessBg = null
 
   // Host-side staging — pre-allocated to avoid per-frame GC pressure. Seeded
@@ -262,18 +301,26 @@ export class Renderer {
   #frameUniformData = new Float32Array(160)
   #deferredLightingData = new Float32Array(16)
   #rainData = new Float32Array(8)
-  #postprocessData = new Float32Array(32)
+  #postprocessData = new Float32Array(64)
   #ssaoData = new Float32Array([16.0, 0.05, 1.0, 0.0]) // radius, bias, tempAlpha, pad
   #bloomExtractData = new Float32Array(4)
   #particleData = new Float32Array(8)
   #fireflySpriteData = new Float32Array(8)
+  // Insect uniforms: color.rgb, opacity, sizeScale, kind, ambient, baseOpacity.
+  // opacity (slot 3) and ambient (slot 6) are written per frame; the trailing
+  // slot holds the base opacity (shader ignores it — it maps to struct pad).
+  #flyData = new Float32Array([0.06, 0.05, 0.05, 0.85, 95.0, 0.0, 1.0, 0.85])
+  #beeData = new Float32Array([0.85, 0.6, 0.14, 0.95, 110.0, 1.0, 1.0, 0.95])
   #grassData = new Float32Array([1.0, 1.0, 0.3, 0.0])
+  // Flower uniforms: sway, alphaThreshold, heightFactor, pad
+  #flowerData = new Float32Array([0.6, 0.5, 1.0, 0.0])
   #birdData = new Float32Array([0.05, 0.05, 0.07, 0.6, 3.0, 0.4, 0.0, 0.0])
   #sky = stage(176)
   #godRay = stage(48)
   #dof = stage(32)
-  #fog = stage(576)
+  #fog = stage(624)
   #fireflyLights = stage(528)
+  #bikeLightStage = stage(112)
   #sunScreenRaw = [0, 0]
   #sunScreenPos = [0, 0]
   #prevViewProjection = null
@@ -301,9 +348,14 @@ export class Renderer {
   #cloudShadowThisFrame = false
   #cloudSunOcclusion = 1.0
   #textModelMatrix = null
+  #bikeModelMatrix = null
+  // World-space head/tail light sources, derived once from the bike transform.
+  // Each entry: { pos: [x,y,z], color: [r,g,b] }.
+  #bikeLights = []
   #tileBaseX = Number.NaN
   #tileBaseZ = Number.NaN
   #grassTileWorker = new GrassTileWorker()
+  #flowerField = null
 
   // Grass frustum culling — one culler per clip volume (camera and shadow light)
   #viewCuller = new GrassCuller()
@@ -404,6 +456,10 @@ export class Renderer {
     ctx.linearRepeat = gpu.linearRepeat
     ctx.nearestClamp = gpu.nearestClamp
 
+    const noisePromise = initNoiseTextureAsync(gpu)
+    const textBuffersPromise = initTextBuffers(gpu)
+    const bikeBuffersPromise = initBikeBuffers(gpu)
+
     if (S.perfHud) this.#profiler = new GpuProfiler(gpu.device)
 
     this.#resize()
@@ -422,15 +478,16 @@ export class Renderer {
 
     this.#fullscreenQuad = initFullscreenQuad(gpu)
 
-    const noise = await initNoiseTextureAsync(gpu)
+    const noise = await noisePromise
     this.#noiseData = noise.data
     this.#noiseTexture = noise.texture
     this.#windNoiseTexture = initWindNoiseTexture(gpu)
 
     this.#grassBuffers = initGrassBuffers(gpu)
+    this.#flowerBuffers = initFlowerBuffers(gpu)
     this.#groundBuffers = initGroundBuffers(gpu)
     this.#birdBuffers = initBirdBuffers(gpu)
-    this.#textBuffers = await initTextBuffers(gpu)
+    // text and bike come in async (see below)
 
     this.#shadowMapTexture = createShadowMap(gpu)
     this.#shadowMapView = this.#shadowMapTexture.createView()
@@ -458,13 +515,20 @@ export class Renderer {
     this.#textObjectUniformBuffer = gpu.createBuffer(64, UNIFORM_USAGE)
     this.#textObjectBindGroup = createObjectBindGroup(gpu.device, objectLayout, this.#textObjectUniformBuffer)
 
+    // Bike object uniform (mat4x4f)
+    this.#bikeObjectUniformBuffer = gpu.createBuffer(64, UNIFORM_USAGE)
+    this.#bikeObjectBindGroup = createObjectBindGroup(gpu.device, objectLayout, this.#bikeObjectUniformBuffer)
+
     // Per-pass uniform buffers — seeded with static values where applicable
     this.#grassUniformBuffer = gpu.createBuffer(16, UNIFORM_USAGE)
     gpu.queue.writeBuffer(this.#grassUniformBuffer, 0, this.#grassData)
+    this.#flowerUniformBuffer = gpu.createBuffer(16, UNIFORM_USAGE)
+    gpu.queue.writeBuffer(this.#flowerUniformBuffer, 0, this.#flowerData)
     this.#birdUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
     gpu.queue.writeBuffer(this.#birdUniformBuffer, 0, this.#birdData)
     this.#deferredLightingBuffer = gpu.createBuffer(64, UNIFORM_USAGE)
     this.#fireflyUniformBuffer = gpu.createBuffer(528, UNIFORM_USAGE)
+    this.#bikeLightsUniformBuffer = gpu.createBuffer(112, UNIFORM_USAGE)
     this.#ssaoUniformBuffer = gpu.createBuffer(16, UNIFORM_USAGE)
     gpu.queue.writeBuffer(this.#ssaoUniformBuffer, 0, this.#ssaoData)
     this.#bloomExtractUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
@@ -474,10 +538,12 @@ export class Renderer {
     this.#rainUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
     this.#godRayUniformBuffer = gpu.createBuffer(48, UNIFORM_USAGE)
     this.#dofUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#fogUniformBuffer = gpu.createBuffer(576, UNIFORM_USAGE)
+    this.#fogUniformBuffer = gpu.createBuffer(624, UNIFORM_USAGE)
     this.#particleUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
     this.#fireflySpriteUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#postprocessUniformBuffer = gpu.createBuffer(128, UNIFORM_USAGE)
+    this.#flyUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
+    this.#beeUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
+    this.#postprocessUniformBuffer = gpu.createBuffer(256, UNIFORM_USAGE)
 
     // Bake targets
     this.#mountainHeightmapTexture = createMountainHeightmap(gpu)
@@ -513,14 +579,34 @@ export class Renderer {
     ])
     this.#grassTileWorker.setHeightmap(this.#groundHeightmap.data, 512, 80)
 
+    this.#flowerField = new FlowerField((x, z) => this.#sampleGround(x, z))
+    this.#flowerField.update(ctx.cameraPosition[0], ctx.cameraPosition[2])
+    gpu.queue.writeBuffer(this.#flowerBuffers.instances, 0, this.#flowerField.data)
+
     this.#textModelMatrix = this.#computeTextModelMatrix()
     if (this.#textModelMatrix) gpu.queue.writeBuffer(this.#textObjectUniformBuffer, 0, this.#textModelMatrix)
+
+    textBuffersPromise
+      .then(buffers => {
+        this.#textBuffers = buffers
+      })
+      .catch(error => reportError("text-load", error))
+    bikeBuffersPromise
+      .then(buffers => {
+        this.#bikeBuffers = buffers
+        this.#bikeModelMatrix = this.#computeBikeModelMatrix()
+        if (this.#bikeModelMatrix) gpu.queue.writeBuffer(this.#bikeObjectUniformBuffer, 0, this.#bikeModelMatrix)
+        this.#bikeLights = this.#computeBikeLights()
+      })
+      .catch(error => reportError("bike-load", error))
 
     this.#renderTargets = createRenderTargets(gpu, ctx.width, ctx.height)
     this.effectsSystem = new EffectsSystem()
     this.#rainBuffers = initRainBuffers(gpu, this.effectsSystem)
     this.#particleBuffers = initParticleBuffers(gpu, this.effectsSystem)
     this.#fireflyBuffers = initFireflyBuffers(gpu, this.effectsSystem)
+    this.#flyBuffers = initFlyBuffers(gpu, this.effectsSystem)
+    this.#beeBuffers = initBeeBuffers(gpu, this.effectsSystem)
 
     // Bind groups that don't depend on screen-size resources
     this.#particleBg = gpu.device.createBindGroup({
@@ -530,6 +616,14 @@ export class Renderer {
     this.#fireflySpriteBg = gpu.device.createBindGroup({
       layout: passLayouts.fireflySprite,
       entries: [{ binding: 0, resource: { buffer: this.#fireflySpriteUniformBuffer } }],
+    })
+    this.#flyBg = gpu.device.createBindGroup({
+      layout: passLayouts.insect,
+      entries: [{ binding: 0, resource: { buffer: this.#flyUniformBuffer } }],
+    })
+    this.#beeBg = gpu.device.createBindGroup({
+      layout: passLayouts.insect,
+      entries: [{ binding: 0, resource: { buffer: this.#beeUniformBuffer } }],
     })
 
     this.#rebuildPassBindGroups()
@@ -603,11 +697,13 @@ export class Renderer {
       device,
       {
         grass: lay.grass,
+        flower: lay.flower,
         shadow: lay.shadow,
         ground: lay.ground,
         bird: lay.bird,
         deferredLighting: lay.deferredLighting,
         fireflyLights: lay.fireflyLights,
+        bikeLights: lay.bikeLights,
         sky: lay.sky,
         rain: lay.rain,
       },
@@ -631,10 +727,12 @@ export class Renderer {
       { linearClamp: lin, linearRepeat: gpu.linearRepeat, nearestClamp: near, depthSampler: gpu.depthSampler },
       {
         grass: this.#grassUniformBuffer,
+        flower: this.#flowerUniformBuffer,
         shadow: this.#shadowUniformBuffer,
         bird: this.#birdUniformBuffer,
         deferredLighting: this.#deferredLightingBuffer,
         fireflyLights: this.#fireflyUniformBuffer,
+        bikeLights: this.#bikeLightsUniformBuffer,
         sky: this.#skyUniformBuffer,
         rain: this.#rainUniformBuffer,
       }
@@ -816,6 +914,83 @@ export class Renderer {
     return new Float32Array(multiplyMM(scaleTrans, multiplyMM(rotY, rotX)))
   }
 
+  // Transforms a point in the text mesh's local space to world space through the
+  // (column-major) text model matrix.
+  #textLocalToWorld(x, y, z) {
+    const m = this.#textModelMatrix
+    return [
+      m[0] * x + m[4] * y + m[8] * z + m[12],
+      m[1] * x + m[5] * y + m[9] * z + m[13],
+      m[2] * x + m[6] * y + m[10] * z + m[14],
+    ]
+  }
+
+  #computeBikeModelMatrix() {
+    if (!this.#bikeBuffers || !this.#textModelMatrix) return null
+    const BIKE_HEIGHT_WU = 2.0
+    const BIKE_LEAN_RAD = 0.16
+    const BIKE_YAW_RAD = -0.4 * Math.PI
+    const TEXT_X = 5.0 - 3.5 
+    const TEXT_Z = 0
+
+    const { min, max } = this.#bikeBuffers.bbox
+    const cx = (min[0] + max[0]) * 0.5 - 1.0
+    const cz = (min[2] + max[2]) * 0.5// - 14.2
+    const s = BIKE_HEIGHT_WU / (max[1] - min[1])
+
+    const anchor = this.#textLocalToWorld(TEXT_X, 0, TEXT_Z)
+    const groundY = this.#sampleGround(anchor[0], anchor[2]) - 0.2
+
+    const cl = Math.cos(BIKE_LEAN_RAD),
+      sl = Math.sin(BIKE_LEAN_RAD)
+    const cyw = Math.cos(BIKE_YAW_RAD),
+      syw = Math.sin(BIKE_YAW_RAD)
+    const centre = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -cx, -min[1], -cz, 1]
+    const scale = [s, 0, 0, 0, 0, s, 0, 0, 0, 0, s, 0, 0, 0, 0, 1]
+    const lean = [cl, sl, 0, 0, -sl, cl, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] // about +Z
+    const yaw = [cyw, 0, syw, 0, 0, 1, 0, 0, -syw, 0, cyw, 0, 0, 0, 0, 1] // about +Y
+    const place = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, anchor[0], groundY, anchor[2], 1]
+
+    const local = multiplyMM(scale, centre)
+    const oriented = multiplyMM(yaw, multiplyMM(lean, local))
+    return new Float32Array(multiplyMM(place, oriented))
+  }
+
+  #computeBikeLights() {
+    if (!this.#bikeModelMatrix) return []
+    const M = this.#bikeModelMatrix
+    const OMNI = 2.0
+    const deg = d => Math.cos((d * Math.PI) / 180)
+    const LAMPS = [
+      {
+        local: [0.1155, 0.714, -0.8935],
+        dirLocal: [0.0, -0.42, -1.0],
+        color: [0.833, 0.833, 1.0],
+        cone: deg(32),
+        reachScale: 2.75,
+        intensity: 5.5,
+      },
+      {
+        local: [0.0, 0.6045, 0.5715],
+        dirLocal: null,
+        color: [1.0, 0.05, 0.02],
+        cone: OMNI,
+        reachScale: 1.0,
+        intensity: 1.0,
+      },
+    ]
+    return LAMPS.map(({ local, dirLocal, color, cone, reachScale, intensity }) => {
+      const w = multiplyMV(M, [...local, 1])
+      let dir = [0, 0, 0]
+      if (dirLocal) {
+        const d = multiplyMV(M, [...dirLocal, 0]) // rotate the beam axis into world space (w=0)
+        const len = Math.hypot(d[0], d[1], d[2]) || 1
+        dir = [d[0] / len, d[1] / len, d[2] / len]
+      }
+      return { pos: [w[0], w[1], w[2]], color, dir, cone, reachScale, intensity }
+    })
+  }
+
   // Orthographic frustum fitted to the camera's near-side frustum corners
   // projected into light space, texel-snapped to prevent shadow shimmer.
   // Returns null when the sun is below the horizon (no shadows at night).
@@ -861,7 +1036,7 @@ export class Renderer {
       if (lc[2] < minZ) minZ = lc[2]
       if (lc[2] > maxZ) maxZ = lc[2]
     }
-    maxZ += 3.0
+    maxZ += OVERHEAD_CASTER_WU
     const field = AREA_SIZE * 1.5
     minX = Math.max(minX, -field)
     maxX = Math.min(maxX, field)
@@ -978,6 +1153,14 @@ export class Renderer {
     ctx.queue.writeBuffer(this.#grassUniformBuffer, 0, d)
   }
 
+  #writeFlowerUniforms(ctx, timeInfo) {
+    const d = this.#flowerData
+    d[0] = timeInfo.flowerSway ?? 0.6
+    d[1] = timeInfo.flowerAlpha ?? 0.5
+    d[2] = timeInfo.grassHeightFactor ?? 1.0
+    ctx.queue.writeBuffer(this.#flowerUniformBuffer, 0, d)
+  }
+
   #writeBirdUniforms(ctx, timeInfo) {
     const d = this.#birdData
     d[3] = timeInfo.birdWingAmplitude ?? 0.41
@@ -1006,7 +1189,7 @@ export class Renderer {
     d[12] = timeInfo.sparkleSpeed ?? 1
     d[13] = ctx.cloudLightOcclusion
     d[14] = this.controlsUI?.debugMode ?? this.#debugMode
-    d[15] = 0
+    d[15] = timeInfo.emissiveIntensity ?? 2.5
     ctx.queue.writeBuffer(this.#deferredLightingBuffer, 0, d)
   }
 
@@ -1036,6 +1219,36 @@ export class Renderer {
     f[3] = 0
     this.#packFireflyArray(f, 4, factor)
     ctx.queue.writeBuffer(this.#fireflyUniformBuffer, 0, buf)
+  }
+
+  #writeBikeLightUniforms(ctx, timeInfo) {
+    const { f, dv, buf } = this.#bikeLightStage
+    const master = timeInfo.bikeLightCast ?? 1.0
+    const radius = timeInfo.bikeLightCastRadius ?? 4.0
+    const count = master > 0 ? this.#bikeLights.length : 0
+    dv.setUint32(0, count, true)
+    f[1] = master // master multiplier; reach/colour intensity are per-lamp
+    f[2] = 0
+    f[3] = 0
+    for (let i = 0; i < this.#bikeLights.length; i++) {
+      const { pos, color, dir, cone, reachScale, intensity: lampI } = this.#bikeLights[i]
+      const p = 4 + i * 4
+      f[p] = pos[0]
+      f[p + 1] = pos[1]
+      f[p + 2] = pos[2]
+      f[p + 3] = radius * reachScale // per-lamp reach
+      const c = 12 + i * 4
+      f[c] = color[0]
+      f[c + 1] = color[1]
+      f[c + 2] = color[2]
+      f[c + 3] = lampI // per-lamp intensity
+      const d = 20 + i * 4
+      f[d] = dir[0]
+      f[d + 1] = dir[1]
+      f[d + 2] = dir[2]
+      f[d + 3] = cone // cos(cone half-angle); > 1 = omnidirectional
+    }
+    ctx.queue.writeBuffer(this.#bikeLightsUniformBuffer, 0, buf)
   }
 
   #writeSkyUniforms(ctx, timeInfo) {
@@ -1123,12 +1336,33 @@ export class Renderer {
     dv.setUint32(44, fireflyCount, true)
     f[12] = factor
     f[13] = timeInfo.fireflyLightRadius
+
+    const head = this.#bikeLights[0]
+    const beam = (timeInfo.bikeLightBeam ?? 1.0) * (timeInfo.bikeLightCast ?? 1.0)
+    if (head && beam > 0) {
+      const reach = (timeInfo.bikeLightCastRadius ?? 4.0) * head.reachScale
+      f[144] = head.pos[0]
+      f[145] = head.pos[1]
+      f[146] = head.pos[2]
+      f[147] = reach
+      f[148] = head.color[0]
+      f[149] = head.color[1]
+      f[150] = head.color[2]
+      f[151] = beam * 5.0 // base scatter strength; control tunes around it
+      f[152] = head.dir[0]
+      f[153] = head.dir[1]
+      f[154] = head.dir[2]
+      f[155] = head.cone
+    } else {
+      f[147] = 0 // reach = 0 disables the beam in the shader
+    }
+
     if (factor > 0) {
       this.#packFireflyArray(f, 16, factor)
       ctx.queue.writeBuffer(this.#fogUniformBuffer, 0, buf)
     } else {
-      // Skip the 512-byte firefly array — only header fields are live.
       ctx.queue.writeBuffer(this.#fogUniformBuffer, 0, buf, 0, 64)
+      ctx.queue.writeBuffer(this.#fogUniformBuffer, 576, buf, 576, 48)
     }
   }
 
@@ -1169,6 +1403,20 @@ export class Renderer {
     f[23] = timeInfo.vignetteStrength
     f[24] = rain
     f[25] = timeInfo.rainbowIntensity
+    f[28] = this.#bikeLights.length
+    f[29] = timeInfo.bikeLightGlow ?? 1.0
+    f[30] = timeInfo.bikeLightFlare ?? 1.0
+    for (let i = 0; i < this.#bikeLights.length; i++) {
+      const { pos, color } = this.#bikeLights[i]
+      const p = 32 + i * 4
+      f[p] = pos[0]
+      f[p + 1] = pos[1]
+      f[p + 2] = pos[2]
+      const c = 40 + i * 4
+      f[c] = color[0]
+      f[c + 1] = color[1]
+      f[c + 2] = color[2]
+    }
     ctx.queue.writeBuffer(this.#postprocessUniformBuffer, 0, f)
   }
 
@@ -1265,6 +1513,24 @@ export class Renderer {
       pass.setIndexBuffer(this.#textBuffers.indices, this.#textBuffers.indexFormat)
       pass.drawIndexed(this.#textBuffers.indexCount)
     }
+    if (this.#bikeBuffers && this.#bikeModelMatrix) {
+      pass.setPipeline(this.#pipelines.shadowText)
+      pass.setBindGroup(1, this.#emptyBindGroup)
+      pass.setBindGroup(2, this.#emptyBindGroup)
+      pass.setBindGroup(3, this.#bikeObjectBindGroup)
+      pass.setVertexBuffer(0, this.#bikeBuffers.positions)
+      pass.setIndexBuffer(this.#bikeBuffers.indices, "uint32")
+      pass.drawIndexed(this.#bikeBuffers.indexCount)
+    }
+    const birds = this.#birdBuffers
+    if (birds && this.#passBindGroups.bird) {
+      pass.setPipeline(this.#pipelines.birdShadow)
+      pass.setBindGroup(1, this.#passBindGroups.bird)
+      pass.setVertexBuffer(0, birds.positions)
+      pass.setVertexBuffer(1, birds.flex)
+      pass.setVertexBuffer(2, birds.instanceBuffer)
+      pass.draw(birds.vertexCount, birds.instanceCount)
+    }
     for (const mod of this.#eventModules) mod.renderShadow(pass, ctx)
     pass.end()
   }
@@ -1312,6 +1578,17 @@ export class Renderer {
       }
     }
 
+    const flowers = this.#flowerBuffers
+    if (flowers && this.#passBindGroups.flower) {
+      pass.setPipeline(this.#pipelines.flower)
+      pass.setBindGroup(0, this.#frameBindGroup)
+      pass.setBindGroup(1, this.#passBindGroups.flower)
+      pass.setVertexBuffer(0, flowers.vertices)
+      pass.setVertexBuffer(1, flowers.instances)
+      pass.setIndexBuffer(flowers.indices, "uint16")
+      pass.drawIndexed(flowers.indexCount, flowers.instanceCount)
+    }
+
     const ground = this.#groundBuffers
     if (ground && this.#passBindGroups.ground) {
       pass.setPipeline(this.#pipelines.ground)
@@ -1333,6 +1610,22 @@ export class Renderer {
       pass.setVertexBuffer(1, this.#textBuffers.normals)
       pass.setIndexBuffer(this.#textBuffers.indices, this.#textBuffers.indexFormat)
       pass.drawIndexed(this.#textBuffers.indexCount)
+    }
+
+    const bike = this.#bikeBuffers
+    if (bike && this.#bikeModelMatrix) {
+      pass.setPipeline(this.#pipelines.bike)
+      pass.setBindGroup(0, this.#frameBindGroup)
+      pass.setBindGroup(1, this.#emptyBindGroup)
+      pass.setBindGroup(2, this.#emptyBindGroup)
+      pass.setBindGroup(3, this.#bikeObjectBindGroup)
+      pass.setVertexBuffer(0, bike.positions)
+      pass.setVertexBuffer(1, bike.normals)
+      pass.setVertexBuffer(2, bike.colors)
+      pass.setVertexBuffer(3, bike.material)
+      pass.setVertexBuffer(4, bike.emissive)
+      pass.setIndexBuffer(bike.indices, "uint32")
+      pass.drawIndexed(bike.indexCount)
     }
 
     const birds = this.#birdBuffers
@@ -1376,6 +1669,8 @@ export class Renderer {
       timeInfo.rain > 0 ||
       (eff?.particleCount ?? 0) > 0 ||
       ((eff?.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) ||
+      ((eff?.flyCount ?? 0) > 0 && ctx.flyFactor > 0) ||
+      ((eff?.beeCount ?? 0) > 0 && ctx.beeFactor > 0) ||
       this.#eventModules.length > 0
 
     if (needsForward) {
@@ -1410,6 +1705,12 @@ export class Renderer {
     if (this.#passBindGroups.fireflyLights && eff && (eff.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) {
       pass.setPipeline(this.#pipelines.fireflyLights)
       pass.setBindGroup(1, this.#passBindGroups.fireflyLights)
+      pass.draw(3)
+    }
+    // Bike head/tail lamps cast onto text, frame, and ground (fullscreen additive).
+    if (this.#passBindGroups.bikeLights && this.#bikeLights.length > 0) {
+      pass.setPipeline(this.#pipelines.bikeLights)
+      pass.setBindGroup(1, this.#passBindGroups.bikeLights)
       pass.draw(3)
     }
   }
@@ -1455,7 +1756,26 @@ export class Renderer {
       pass.setVertexBuffer(1, this.#fireflyBuffers.brightness)
       pass.draw(4, eff.fireflyCount)
     }
+    // Flies + bees (daytime, depthCompare: less, alpha blend). Same pipeline,
+    // different per-pass uniform (color/size/kind) and vertex buffers.
+    // prettier-ignore
+    this.#drawInsects(pass, ctx, timeInfo, this.#flyBuffers, this.#flyBg, this.#flyUniformBuffer, this.#flyData, ctx.flyFactor)
+    // prettier-ignore
+    this.#drawInsects(pass, ctx, timeInfo, this.#beeBuffers, this.#beeBg, this.#beeUniformBuffer, this.#beeData, ctx.beeFactor)
     for (const mod of this.#eventModules) mod.renderForward(pass, ctx)
+  }
+
+  #drawInsects(pass, ctx, timeInfo, buffers, bindGroup, uniformBuffer, data, factor) {
+    if (!buffers || !buffers.count || factor <= 0) return
+    data[3] = data[7] * factor // opacity = baseOpacity * visibility
+    data[6] = timeInfo.ambientIntensity
+    ctx.queue.writeBuffer(uniformBuffer, 0, data)
+    pass.setPipeline(this.#pipelines.insect)
+    pass.setBindGroup(1, bindGroup)
+    pass.setVertexBuffer(0, buffers.positions)
+    pass.setVertexBuffer(1, buffers.sizes)
+    pass.setVertexBuffer(2, buffers.phases)
+    pass.draw(4, buffers.count)
   }
 
   // Temporal SSAO — stable per-pixel kernel rotation, only temporalAlpha changes.
@@ -1608,8 +1928,12 @@ export class Renderer {
     ctx.currentTime = now
 
     // Time + adaptive quality
-    if (this.cameraAnimator?.isActive) this.timeSystem.rawTime()
-    else this.timeSystem.lerpTime()
+    if (this.cameraAnimator?.isActive) this.timeSystem.rawTime(ctx.deltaTime)
+    else this.timeSystem.lerpTime(ctx.deltaTime)
+    // When the day is fast-forwarded the scene clock outruns real time; the CPU
+    // sim systems integrate against this scaled delta so they keep pace with the
+    // sun instead of crawling. Capped for integrator stability (MAX_SIM_TIME_SCALE).
+    ctx.simDeltaTime = ctx.deltaTime * Math.min(this.timeSystem.timeScale, MAX_SIM_TIME_SCALE)
     let timeInfo = this.timeSystem.timeInfo
     if (!this.cameraAnimator?.isActive) {
       this.adaptiveQuality.tick(now)
@@ -1636,6 +1960,9 @@ export class Renderer {
     ctx.primaryLightDir.z = pd[2]
     ctx.primaryLightStrength = blend + inv * 0.15
     ctx.fireflyFactor = computeFireflyFactor(timeInfo)
+    const dayFactor = computeDayFactor(timeInfo)
+    ctx.flyFactor = dayFactor * timeInfo.flyIntensity
+    ctx.beeFactor = dayFactor * timeInfo.beeIntensity
 
     // Idle camera drift toward init pose when not user-controlled
     if (!this.camera.locked && !this.camera.isTouching && !this.cameraAnimator?.isActive) {
@@ -1665,8 +1992,11 @@ export class Renderer {
     ctx.lightSpaceMatrix = this.#computeLightSpaceMatrix(ctx)
     this.#profiler?.cpuEnd("matrices")
 
-    this.windSystem.update(ctx.deltaTime, timeInfo)
+    this.windSystem.update(ctx.simDeltaTime, timeInfo)
     this.#updateGrassTileAnchors(ctx)
+    if (this.#flowerField && this.#flowerField.update(ctx.cameraPosition[0], ctx.cameraPosition[2])) {
+      ctx.queue.writeBuffer(this.#flowerBuffers.instances, 0, this.#flowerField.data)
+    }
 
     // Per-tile grass frustum culling → merged instance ranges for the draws.
     this.#grassCullingEnabled = (timeInfo.grassCulling ?? 1) > 0.5 && !!this.#grassBuffers
@@ -1718,16 +2048,18 @@ export class Renderer {
     // Per-subsystem uniform writes
     this.#profiler?.cpuBegin("uniforms")
     this.#writeGrassUniforms(ctx, timeInfo)
+    this.#writeFlowerUniforms(ctx, timeInfo)
     if (this.boidsSystem && this.#birdBuffers) {
       this.#profiler?.cpuBegin("boids")
-      this.boidsSystem.update(ctx.deltaTime, ctx.cameraPosition, ctx.lookAt, timeInfo, mouseRay)
+      this.boidsSystem.update(ctx.simDeltaTime, ctx.cameraPosition, ctx.lookAt, timeInfo, mouseRay)
       updateBirdInstances(ctx.queue, this.#birdBuffers, this.boidsSystem)
       this.#profiler?.cpuEnd("boids")
       this.#writeBirdUniforms(ctx, timeInfo)
     }
     this.#writeDeferredLightingUniforms(ctx, timeInfo)
+    this.#writeBikeLightUniforms(ctx, timeInfo)
     this.#updateEffects(ctx, timeInfo)
-    for (const mod of this.#eventModules) mod.update(ctx.deltaTime, ctx, timeInfo, this.windSystem.uniforms)
+    for (const mod of this.#eventModules) mod.update(ctx.simDeltaTime, ctx, timeInfo, this.windSystem.uniforms)
     this.#writeSkyUniforms(ctx, timeInfo)
     this.#writeRainUniforms(ctx, timeInfo)
     this.#writeGodRayUniforms(ctx, timeInfo)
@@ -1768,7 +2100,7 @@ export class Renderer {
   #updateEffects(ctx, timeInfo) {
     const eff = this.effectsSystem
     if (!eff) return
-    eff.update(ctx.deltaTime, ctx.cameraPosition)
+    eff.update(ctx.simDeltaTime, ctx.cameraPosition)
     this.#writeFireflyUniforms(ctx, timeInfo)
     if (this.#particleBuffers && eff.particlePositions) {
       ctx.queue.writeBuffer(this.#particleBuffers.positions, 0, eff.particlePositions)
@@ -1777,6 +2109,12 @@ export class Renderer {
     if (this.#fireflyBuffers && eff.fireflyPositions) {
       ctx.queue.writeBuffer(this.#fireflyBuffers.positions, 0, eff.fireflyPositions)
       ctx.queue.writeBuffer(this.#fireflyBuffers.brightness, 0, eff.fireflyBrightness)
+    }
+    if (this.#flyBuffers && eff.flyPositions && ctx.flyFactor > 0) {
+      ctx.queue.writeBuffer(this.#flyBuffers.positions, 0, eff.flyPositions)
+    }
+    if (this.#beeBuffers && eff.beePositions && ctx.beeFactor > 0) {
+      ctx.queue.writeBuffer(this.#beeBuffers.positions, 0, eff.beePositions)
     }
   }
 

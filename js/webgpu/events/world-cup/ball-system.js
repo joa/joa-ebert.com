@@ -6,7 +6,7 @@
 // animation drives the Y component of the model matrix each frame.
 
 // World position of the ball (bottom of sphere)
-export const BALL_POS = Object.freeze({ x: -15, y: 1, z: -3 })//{ x: 3.5, y: 0, z: -6 })
+export const BALL_POS = Object.freeze({ x: -15, y: 1, z: -3 }) //{ x: 3.5, y: 0, z: -6 })
 
 const BALL_RADIUS = 0.25 // wu
 

@@ -31,4 +31,5 @@ export default {
   initPos: [-5, idleY, -5],
   initLookAt: [-5, 4.5, 10.0],
   timeInertia: 0.2,
+  date: new Date(),
 }

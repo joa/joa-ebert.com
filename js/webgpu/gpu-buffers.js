@@ -10,8 +10,9 @@
 // - Render targets: G-buffer MRT, HDR scene, SSAO ping-pong, bloom mips, god ray
 
 import { BIRD_COUNT } from "../shared/boids-system.js"
+import { FLOWER_COUNT, FLOWER_STRIDE } from "../shared/flower-field.js"
 import { smoothstep } from "../shared/math-utils.js"
-import { loadGLB } from "../shared/glb-loader.js"
+import { loadGLB, loadGLBMerged } from "../shared/glb-loader.js"
 import S from "../shared/settings.js"
 
 // Constants (mirrored from WebGL renderer)
@@ -108,6 +109,39 @@ export function initGrassBuffers(gpu) {
     denseNoiseCPU: new Float32Array(denseGrassCount * 5),
     tileCoords: new Int32Array(NUM_TILES * 2).fill(0x7fffffff),
     denseTileCoords: new Int32Array(DENSE_TILES * 2).fill(0x7fffffff),
+  }
+}
+
+// Flower Buffers
+// ##############
+//
+// Two crossed vertical cards form the impostor. Per vertex: position (vec3f),
+// uv (vec2f), and the card's outward normal in the local XZ plane (vec2f) so the
+// vertex shader can rotate it into world space. Stride 28 bytes.
+
+export function initFlowerBuffers(gpu) {
+  // prettier-ignore
+  const verts = new Float32Array([
+    // card A — faces +Z: x in [-.5,.5], y in [0,1], z = 0
+    -0.5, 0.0, 0.0,  0.0, 0.0,  0.0, 1.0,
+     0.5, 0.0, 0.0,  1.0, 0.0,  0.0, 1.0,
+    -0.5, 1.0, 0.0,  0.0, 1.0,  0.0, 1.0,
+     0.5, 1.0, 0.0,  1.0, 1.0,  0.0, 1.0,
+    // card B — faces +X: z in [-.5,.5], y in [0,1], x = 0
+     0.0, 0.0, -0.5, 0.0, 0.0,  1.0, 0.0,
+     0.0, 0.0,  0.5, 1.0, 0.0,  1.0, 0.0,
+     0.0, 1.0, -0.5, 0.0, 1.0,  1.0, 0.0,
+     0.0, 1.0,  0.5, 1.0, 1.0,  1.0, 0.0,
+  ])
+  const indices = new Uint16Array([0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7])
+  const V = GPUBufferUsage.VERTEX
+  return {
+    vertices: gpu.createBuffer(verts, V),
+    indices: gpu.createBuffer(indices, GPUBufferUsage.INDEX),
+    indexCount: indices.length,
+    // Interleaved instances: [posX,posY,posZ, rotation,scale,kind,seed] — updated on tile scroll
+    instances: gpu.createBuffer(FLOWER_COUNT * FLOWER_STRIDE * 4, V | GPUBufferUsage.COPY_DST),
+    instanceCount: FLOWER_COUNT,
   }
 }
 
@@ -254,6 +288,29 @@ export function initFireflyBuffers(gpu, effectsSystem) {
   }
 }
 
+// Insect Buffers (flies + bees)
+// #############################
+
+function initInsectBuffers(gpu, positions, sizes, phases, count) {
+  if (!positions) return null
+  const V = GPUBufferUsage.VERTEX
+  const CD = GPUBufferUsage.COPY_DST
+  return {
+    positions: gpu.createBuffer(positions, V | CD),
+    sizes: gpu.createBuffer(sizes, V),
+    phases: gpu.createBuffer(phases, V),
+    count,
+  }
+}
+
+export function initFlyBuffers(gpu, eff) {
+  return initInsectBuffers(gpu, eff.flyPositions, eff.flySizes, eff.flyPhases, eff.flyCount)
+}
+
+export function initBeeBuffers(gpu, eff) {
+  return initInsectBuffers(gpu, eff.beePositions, eff.beeSizes, eff.beePhases, eff.beeCount)
+}
+
 // Text (GLB) Buffers
 // ##################
 
@@ -268,6 +325,39 @@ export async function initTextBuffers(gpu) {
     indices: gpu.createBuffer(mesh.indices.data, GPUBufferUsage.INDEX),
     indexCount: mesh.indices.count,
     indexFormat: mesh.indices.data instanceof Uint32Array ? "uint32" : "uint16",
+  }
+}
+
+// Bike Buffers
+// ##################
+
+const BIKE_URL = "/assets/roadbike.glb"
+
+function isSceneProp(nodeName) {
+  return nodeName.startsWith("alights") || nodeName === "Plane" || nodeName === "Circle.007"
+}
+
+function bikeLightEmission(nodeName) {
+  return nodeName === "front" || nodeName === "back" ? 1.0 : 0.0
+}
+
+export async function initBikeBuffers(gpu) {
+  const bike = await loadGLBMerged(BIKE_URL, {
+    skipNode: isSceneProp,
+    mirrorHalvesAcrossX: false,
+    emissiveNode: bikeLightEmission,
+  })
+  if (!bike) return null
+  const V = GPUBufferUsage.VERTEX
+  return {
+    positions: gpu.createBuffer(bike.positions, V),
+    normals: gpu.createBuffer(bike.normals, V),
+    colors: gpu.createBuffer(bike.colors, V),
+    material: gpu.createBuffer(bike.material, V),
+    emissive: gpu.createBuffer(bike.emissive, V),
+    indices: gpu.createBuffer(bike.indices, GPUBufferUsage.INDEX),
+    indexCount: bike.indexCount,
+    bbox: bike.bbox,
   }
 }
 
@@ -438,6 +528,14 @@ export function bloomChainFormat(device) {
   return device.features.has("rg11b10ufloat-renderable") ? "rg11b10ufloat" : "rgba16float"
 }
 
+// The scene colour buffer holds *pre-tonemap HDR*: the sun disc and bright forward
+// lights are written well above 1.0 so the AgX tonemap (which maps up to EV +4)
+// can roll them off into hot highlights instead of clipping everything to a flat
+// white. rgba16float keeps an alpha channel for the forward alpha/additive blends.
+// Low-spec stays rgba8unorm — highlights clip there as before — to spare bandwidth
+// on TBDR GPUs. Every pipeline drawing into sceneTexture must use this format.
+export const SCENE_FORMAT = S.lowSpec ? "rgba8unorm" : "rgba16float"
+
 export function createRenderTargets(gpu, width, height) {
   const divisor = S.lowSpec ? 4 : 2
   const hw = Math.max(1, Math.floor(width / divisor))
@@ -465,7 +563,7 @@ export function createRenderTargets(gpu, width, height) {
     gAlbedo: gpu.createRenderTarget(width, height),
     gNormal: gpu.createRenderTarget(width, height),
     gMaterial: gpu.createRenderTarget(width, height),
-    sceneTexture: gpu.createRenderTarget(width, height),
+    sceneTexture: gpu.createRenderTarget(width, height, SCENE_FORMAT),
     bloomExtract: makeRT(hw, hh, bloomFormat),
     bloomMips,
     godRay: makeRT(hw, hh),

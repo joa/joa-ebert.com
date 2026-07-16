@@ -1,20 +1,43 @@
 import S from "./settings.js"
 import { lerp, smoothstep } from "./math-utils.js"
 import { solarElevationAzimuth, solarDirection, dateForLocalHour } from "./solar.js"
+import { Prng } from "./prng.js"
+
+const seed = ((d) => d.getFullYear() + (d.getMonth() + 1) * 31 + d.getDate())(S.date)
+const rng = new Prng(seed)
 
 const PERIOD_NIGHT = "night"
 const PERIOD_DAWN = "dawn"
 const PERIOD_GOLDEN = "golden"
 const PERIOD_DAY = "day"
 
+const RAINY_DAY = rng.next() > 0.65
+const CLOUDY_DAY = rng.next() <= 0.5
+
+const pickCloudParameters = () => {
+  if (!RAINY_DAY && CLOUDY_DAY) {
+    const cloudTop = 130.0 + (rng.next() - 0.5) * 10.0
+    return {
+      cloudBase: cloudTop - (30.0 + rng.next() * 50.0),
+      cloudTop,
+      cloudCoverage: 0.39 + (rng.next() - 0.5) * 0.1,
+      cloudSigmaE: 0.09 + (rng.next() - 0.5) * 0.005,
+    }
+  }
+
+  return {
+    cloudBase: 65.0 - rng.next() * 15.0,
+    cloudTop:89.0 + rng.next() * 11.0,
+    cloudCoverage: 0.55 + (rng.next() - 0.5) * 0.1,
+    cloudSigmaE: 0.01 + rng.next() * 0.05,
+  }
+}
+
 const fogQuality = S.lowSpec ? 0.0 : 1.0
-const cloudBase = 65.0 - Math.random() * 15.0
-const cloudTop = 89.0 + Math.random() * 11.0
-const cloudCoverage = 0.55 + (Math.random() - 0.5) * 0.1
+const rain = RAINY_DAY ? 0.3 + rng.next() * 0.7 : 0.0
+const {cloudBase, cloudTop, cloudCoverage, cloudSigmaE} = pickCloudParameters()
 const cloudSteps = S.lowSpec ? 12 : 16
 const cloudShadowSteps = S.lowSpec ? 2 : 3
-const cloudSigmaE = 0.01 + Math.random() * 0.05
-const rain = Math.random() > 0.6 ? 0.3 + Math.random() * 0.7 : 0.0
 const overcast = 0.01
 const depthOfField = 1.2
 const dofFocusNear = 1.0
@@ -24,6 +47,8 @@ const dofBlurFar = 10001
 const rainbowIntensity = 0.43
 const grassHeightFactor = 1.0
 const grassWidthFactor = 1.0
+const flowerSway = 0.6
+const flowerAlpha = 0.77
 const respiratoryRate = 12
 const heartRate = 50
 
@@ -46,7 +71,7 @@ const HOUR_00 = {
   chromaticAberration: 0.008,
   cgExposure: 0.9,
   cgContrast: 1.28,
-  cgSaturation: 0.68,
+  cgSaturation: 0.98,
   cgLift: [0.02, 0.04, 0.1],
   windStrength: 0.12,
   depthOfField,
@@ -90,7 +115,7 @@ const HOUR_04 = {
   chromaticAberration: 0.008,
   cgExposure: 1.0,
   cgContrast: 1.25,
-  cgSaturation: 0.83,
+  cgSaturation: 0.93,
   cgLift: [0.02, 0.04, 0.09],
   windStrength: 0.13,
   depthOfField,
@@ -130,13 +155,13 @@ const HOUR_05_30 = {
   colorTemperature: 0.1,
   bloomIntensity: 0.1,
   bloomThreshold: 0.91,
-  godRayIntensity: 1.2,
+  godRayIntensity: 3.2,
   godRayDecay: 0.99,
   ssaoIntensity: 0.2,
   chromaticAberration: 0.006,
   cgExposure: 1.0,
   cgContrast: 1.15,
-  cgSaturation: 0.8,
+  cgSaturation: 0.9,
   cgLift: [0.03, 0.02, 0.02],
   windStrength: 0.16,
   depthOfField,
@@ -176,13 +201,13 @@ const HOUR_06_30 = {
   colorTemperature: 0.55,
   bloomIntensity: 0.1,
   bloomThreshold: 0.91,
-  godRayIntensity: 1.2,
+  godRayIntensity: 3.9,
   godRayDecay: 0.99,
   ssaoIntensity: 0.1,
   chromaticAberration: 0.004,
   cgExposure: 1.0,
   cgContrast: 1.12,
-  cgSaturation: 0.88,
+  cgSaturation: 0.98,
   cgLift: [0.04, 0.03, 0.01],
   windStrength: 0.18,
   depthOfField,
@@ -222,7 +247,7 @@ const HOUR_08 = {
   colorTemperature: 0.3,
   bloomIntensity: 0.17,
   bloomThreshold: 0.96,
-  godRayIntensity: 0.45,
+  godRayIntensity: 1.45,
   godRayDecay: 0.72,
   ssaoIntensity: 0.2,
   chromaticAberration: 0.0035,
@@ -243,7 +268,7 @@ const HOUR_08 = {
   cloudSteps,
   cloudShadowSteps,
   rain,
-  lensFlareIntensity: 0.2,
+  lensFlareIntensity: 0.7,
   grainStrength: 0.072,
   vignetteStrength: 1.0,
   rainbowIntensity,
@@ -251,6 +276,7 @@ const HOUR_08 = {
   grassWidthFactor,
   respiratoryRate,
   heartRate,
+  bikeLightCast: 0.5,
 }
 
 const HOUR_10 = {
@@ -267,7 +293,7 @@ const HOUR_10 = {
   colorTemperature: 0.06,
   bloomIntensity: 0.1,
   bloomThreshold: 0.99,
-  godRayIntensity: 0.3,
+  godRayIntensity: 1.1,
   godRayDecay: 0.75,
   ssaoIntensity: 0.2,
   chromaticAberration: 0.003,
@@ -288,7 +314,7 @@ const HOUR_10 = {
   cloudSteps,
   cloudShadowSteps,
   rain,
-  lensFlareIntensity: 0.1,
+  lensFlareIntensity: 1.0,
   grainStrength: 0.072,
   vignetteStrength: 1.0,
   rainbowIntensity,
@@ -296,6 +322,7 @@ const HOUR_10 = {
   grassWidthFactor,
   respiratoryRate,
   heartRate,
+  bikeLightCast: 0.2,
 }
 
 const HOUR_12 = {
@@ -312,7 +339,7 @@ const HOUR_12 = {
   colorTemperature: 0.0,
   bloomIntensity: 0.18,
   bloomThreshold: 0.92,
-  godRayIntensity: 0.08,
+  godRayIntensity: 1.08,
   godRayDecay: 0.75,
   ssaoIntensity: 0.1,
   chromaticAberration: 0.003,
@@ -333,7 +360,7 @@ const HOUR_12 = {
   cloudSteps,
   cloudShadowSteps,
   rain,
-  lensFlareIntensity: 0.04,
+  lensFlareIntensity: 1.2,
   grainStrength: 0.072,
   vignetteStrength: 1.0,
   rainbowIntensity: 0,
@@ -341,6 +368,7 @@ const HOUR_12 = {
   grassWidthFactor,
   respiratoryRate,
   heartRate,
+  bikeLightCast: 0.2,
 }
 
 const HOUR_16 = {
@@ -357,7 +385,7 @@ const HOUR_16 = {
   colorTemperature: 0.28,
   bloomIntensity: 0.2,
   bloomThreshold: 0.92,
-  godRayIntensity: 0.18,
+  godRayIntensity: 1.18,
   godRayDecay: 0.74,
   ssaoIntensity: 0.2,
   chromaticAberration: 0.003,
@@ -378,7 +406,7 @@ const HOUR_16 = {
   cloudSteps,
   cloudShadowSteps,
   rain,
-  lensFlareIntensity: 0.08,
+  lensFlareIntensity: 0.8,
   grainStrength: 0.072,
   vignetteStrength: 1.0,
   rainbowIntensity,
@@ -386,6 +414,7 @@ const HOUR_16 = {
   grassWidthFactor,
   respiratoryRate,
   heartRate,
+  bikeLightCast: 0.75,
 }
 
 const HOUR_18 = {
@@ -402,7 +431,7 @@ const HOUR_18 = {
   colorTemperature: 0.65,
   bloomIntensity: 0.17,
   bloomThreshold: 0.96,
-  godRayIntensity: 1.9,
+  godRayIntensity: 3.9,
   godRayDecay: 0.955,
   ssaoIntensity: 0.2,
   chromaticAberration: 0.007,
@@ -431,6 +460,7 @@ const HOUR_18 = {
   grassWidthFactor,
   respiratoryRate,
   heartRate,
+  bikeLightCast: 1.0,
 }
 
 const HOUR_19_30 = {
@@ -447,7 +477,7 @@ const HOUR_19_30 = {
   colorTemperature: 0.45,
   bloomIntensity: 0.14,
   bloomThreshold: 0.91,
-  godRayIntensity: 0.3,
+  godRayIntensity: 3.3,
   godRayDecay: 1.0,
   ssaoIntensity: 0.16,
   chromaticAberration: 0.007,
@@ -498,7 +528,7 @@ const HOUR_21 = {
   chromaticAberration: 0.006,
   cgExposure: 1.0,
   cgContrast: 1.24,
-  cgSaturation: 0.72,
+  cgSaturation: 0.92,
   cgLift: [0.02, 0.04, 0.09],
   windStrength: 0.14,
   depthOfField,
@@ -547,6 +577,18 @@ export class TimeSystem {
   #overrideTime = null
   #actualTime = currentHour()
   #overrides = {}
+
+  // How fast the scene clock is advancing relative to real time this frame.
+  // 1 during normal playback (the clock follows the wall clock); larger while
+  // the day is fast-forwarded (intro, scroll scrub). dt-integrating systems
+  // (wind, birds, insects) multiply their dt by this so they keep pace with the
+  // racing sun instead of crawling. See #updateTimeScale.
+  #timeScale = 1
+  // #actualTime sampled at the previous frame's scale update. The scale is a
+  // frame-over-frame diff of the scene clock, NOT a within-call before/after:
+  // setOverrideTime(forceActualTime) advances #actualTime mid-frame, so a
+  // before/after diff inside rawTime/lerpTime would always read zero.
+  #scaleAnchorHour = this.#actualTime
 
   // timeInfo is rebuilt into this single object every frame — every key is
   // rewritten each call, so consumers must not hold it across frames. The color
@@ -662,6 +704,8 @@ export class TimeSystem {
     p.rainbowIntensity = L(kA.rainbowIntensity, kB.rainbowIntensity, rainbowIntensity)
     p.grassHeightFactor = L(kA.grassHeightFactor, kB.grassHeightFactor, grassHeightFactor)
     p.grassWidthFactor = L(kA.grassWidthFactor, kB.grassWidthFactor, grassWidthFactor)
+    p.flowerSway = L(kA.flowerSway, kB.flowerSway, flowerSway)
+    p.flowerAlpha = L(kA.flowerAlpha, kB.flowerAlpha, flowerAlpha)
     p.grassCulling = L(kA.grassCulling, kB.grassCulling, 1.0)
     p.shadowGrassDensity = L(kA.shadowGrassDensity, kB.shadowGrassDensity, 1.0)
     p.dewAmount = L(kA.dewAmount, kB.dewAmount, 0.0)
@@ -682,22 +726,56 @@ export class TimeSystem {
     p.birdScale = L(kA.birdScale, kB.birdScale, 0.6)
     p.fireflyIntensity = L(kA.fireflyIntensity, kB.fireflyIntensity, 1.0)
     p.fireflyLightRadius = L(kA.fireflyLightRadius, kB.fireflyLightRadius, 4.0)
+    p.flyIntensity = L(kA.flyIntensity, kB.flyIntensity, 1.0)
+    p.beeIntensity = L(kA.beeIntensity, kB.beeIntensity, 1.0)
     p.chemtrailCount = L(kA.chemtrailCount, kB.chemtrailCount, 3)
-    p.chemtrailOpacity = L(kA.chemtrailOpacity, kB.chemtrailOpacity, 0.015)
-    p.chemtrailWidth = L(kA.chemtrailWidth, kB.chemtrailWidth, 0.01)
+    p.chemtrailOpacity = L(kA.chemtrailOpacity, kB.chemtrailOpacity, 0.055)
+    p.chemtrailWidth = L(kA.chemtrailWidth, kB.chemtrailWidth, 0.005)
     p.sparkleEnabled = L(kA.sparkleEnabled, kB.sparkleEnabled, 1.0)
     p.sparkleIntensity = L(kA.sparkleIntensity, kB.sparkleIntensity, 0.3)
     p.sparkleDensity = L(kA.sparkleDensity, kB.sparkleDensity, 20.0)
     p.sparkleSharpness = L(kA.sparkleSharpness, kB.sparkleSharpness, 0.4)
     p.sparkleSpeed = L(kA.sparkleSpeed, kB.sparkleSpeed, 2.12)
+    p.emissiveIntensity = L(kA.emissiveIntensity, kB.emissiveIntensity, 10.0)
+    p.bikeLightCast = L(kA.bikeLightCast, kB.bikeLightCast, 1.0)
+    p.bikeLightCastRadius = L(kA.bikeLightCastRadius, kB.bikeLightCastRadius, 4.0)
+    p.bikeLightGlow = L(kA.bikeLightGlow, kB.bikeLightGlow, 0.45)
+    p.bikeLightFlare = L(kA.bikeLightFlare, kB.bikeLightFlare, 0.3)
+    p.bikeLightBeam = L(kA.bikeLightBeam, kB.bikeLightBeam, 1.0)
     return p
   }
 
-  rawTime() {
-    this.#actualTime = this.#overrideTime !== null ? this.#overrideTime : currentHour()
+  get timeScale() {
+    return this.#timeScale
   }
 
-  lerpTime() {
+  // Scene-time advance since the last frame ÷ real-time advance, floored at 1.
+  // Only the driven modes (override set) can exceed 1: when the wall clock is the
+  // source the ratio is pinned to 1 so its 1s quantization can't cause a spike. A
+  // held static override advances 0 scene-seconds, so the floor keeps systems
+  // running at real speed. The anchor is refreshed every call so a fast segment
+  // starting after a quiet period measures a single frame's advance, not a jump.
+  // dtMs is the real frame delta.
+  #updateTimeScale(dtMs) {
+    let deltaHours = this.#actualTime - this.#scaleAnchorHour
+    if (deltaHours > 12) deltaHours -= 24
+    if (deltaHours < -12) deltaHours += 24
+    this.#scaleAnchorHour = this.#actualTime
+
+    if (this.#overrideTime === null || dtMs <= 0) {
+      this.#timeScale = 1
+      return
+    }
+    const sceneSec = Math.abs(deltaHours) * 3600
+    this.#timeScale = Math.max(1, sceneSec / (dtMs * 0.001))
+  }
+
+  rawTime(dtMs = 0) {
+    this.#actualTime = this.#overrideTime !== null ? this.#overrideTime : currentHour()
+    this.#updateTimeScale(dtMs)
+  }
+
+  lerpTime(dtMs = 0) {
     const target = this.#overrideTime !== null ? this.#overrideTime : currentHour()
 
     let delta = target - this.#actualTime
@@ -709,6 +787,7 @@ export class TimeSystem {
     if (t >= 24) t -= 24
 
     this.#actualTime = t
+    this.#updateTimeScale(dtMs)
   }
 
   get timeInfo() {

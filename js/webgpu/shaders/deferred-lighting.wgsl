@@ -49,7 +49,7 @@ struct DeferredLightingUniforms {
   sparkleSpeed: f32,
   cloudLightOcclusion: f32,
   debugMode: f32,
-  pad: f32,
+  emissiveIntensity: f32,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -256,6 +256,13 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   // Bird: flat ambient, no shading
   if (matID == 3) {
     return vec4f(albedo_raw * lighting.ambientIntensity, 1.0);
+  }
+
+  // Emissive bike lights: the head/tail lights carry a per-vertex emissive
+  // strength in extraData (0 for every other matID-2 surface, i.e. text). Emit
+  // the lamp colour directly, scaled past the LDR ceiling so bloom picks it up.
+  if (matID == 2 && extraData > 0.001) {
+    return vec4f(albedo_raw * extraData * lighting.emissiveIntensity, 1.0);
   }
 
   var albedo = albedo_raw;

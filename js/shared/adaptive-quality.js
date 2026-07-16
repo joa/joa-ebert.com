@@ -26,14 +26,14 @@ const QUALITY_PARAMS = S.lowSpec
       { key: "godRaySteps", min: 16, target: 32, targetAt: PHASE_SPLIT, max: 48 },
       { key: "cloudSteps", min: 6, target: 10, targetAt: 0.35, max: 20 },
       { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
-      { key: "mountainSteps", min: 24, target: 48, targetAt: PHASE_SPLIT, max: 48 },
+      { key: "mountainSteps", min: 8, target: 16, targetAt: 0.1, max: 16 },
       { key: "shadowGrassDensity", min: 0.5, target: 1, targetAt: PHASE_SPLIT, max: 1, float: true },
     ]
   : [
       { key: "godRaySteps", min: 32, target: 48, targetAt: PHASE_SPLIT, max: 64 },
       { key: "cloudSteps", min: 6, target: 12, targetAt: 0.35, max: 32 },
       { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
-      { key: "mountainSteps", min: 32, target: 64, targetAt: PHASE_SPLIT, max: 64 },
+      { key: "mountainSteps", min: 8, target: 64, targetAt: 0.1, max: 64 },
       { key: "shadowGrassDensity", min: 0.5, target: 1, targetAt: PHASE_SPLIT, max: 1, float: true },
     ]
 
@@ -127,7 +127,7 @@ export class AdaptiveQuality {
     out.fogQuality = fogDisabled || !this.#fogEnabled ? 0 : timeInfo.fogQuality
     out.depthOfField = timeInfo.depthOfField * q
     out.cloudTop = Math.max(
-      Math.min(timeInfo.cloudBase + 4, timeInfo.cloudTop),
+      Math.min(timeInfo.cloudBase + 32, timeInfo.cloudTop),
       timeInfo.cloudBase + q * Math.max(0, timeInfo.cloudTop - timeInfo.cloudBase)
     )
 

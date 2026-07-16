@@ -12,6 +12,8 @@ npm run format    # Auto-fix formatting
 npm start         # Preview dist/ with vite preview (after build)
 ```
 
+**Visual iteration (do not guess at colors/lighting):** `node scripts/shot.mjs <hour[,hour...]> [width] [height]` boots the renderer in headless Chrome (via the placeholder harness, quality pinned, rain forced off) and writes one small PNG per hour to the scratchpad so changes can be _seen_. Example: `node scripts/shot.mjs 6,12,18,20 512 340`. Always verify sky/lighting/color changes across several hours (dawn, midday, golden hour, dusk) before declaring them done — a fix that looks right at noon often breaks golden hour.
+
 ## CSS
 
 Styles are authored in `css/style.css` using Tailwind CSS v4 via the `@tailwindcss/vite` plugin.
@@ -45,8 +47,17 @@ Styles are authored in `css/style.css` using Tailwind CSS v4 via the `@tailwindc
 - **Never use `textureSample` or `textureSampleCompare` inside non-uniform control flow.** WGSL requires these in uniform control flow only. Use `textureLoad` (integer coordinate fetch) instead, with manual coordinate computation via `textureDimensions()`. For 3D noise textures, this means manual trilinear interpolation with 8 `textureLoad` calls + smoothstep blending. For shadow maps, use `textureLoad` + manual depth comparison.
 - **`textureSampleLevel` is allowed in non-uniform control flow** (explicit LOD bypasses the restriction). Use it for vertex shader texture reads and cases where you control the LOD.
 - **WGSL struct alignment:** `vec3f` aligns to 16 bytes but has size 12. A `f32` field after a `vec3f` packs into the 4 remaining bytes at offset 12, not at offset 16. `vec2f` aligns to 8 bytes. Always verify byte offsets against the WGSL spec when writing uniform buffers from JS.
+- **`smoothstep(edge0, edge1, x)` with `edge0 > edge1` is indeterminate** (Dawn returns 0, so the whole sprite/mask goes transparent and silently discards). Never write a "reversed" falloff like `smoothstep(1.0, 0.55, r)` for an opaque-center dot — use `1.0 - smoothstep(0.55, 1.0, r)`.
 - **Every bind group slot declared in the pipeline layout must be set** at draw time, even if the group is empty. Use `createEmptyBindGroup()` for unused slots.
 - **FrameUniforms (group 0)** is a single 640-byte uniform buffer shared by all passes. The `lightSpaceMatrix` lives at float offset 112 (byte 448). All passes bind the same frame bind group at group 0.
+
+## Color & Tonemapping Pipeline (gotchas)
+
+Two non-obvious traps cost a long "why is the sky purple / sun washed out" debug. Read these before touching sky, tonemap, bloom, or keyframe colors:
+
+- **AgX rotates bright, near-white blues toward violet.** `filmicTonemap()` in `postprocess.wgsl` is AgX. A saturated/darker blue like `zenithColor` (0.16, 0.42, 0.9) survives and reads blue, but a pale near-white blue like the keyframe `horizonColor` (0.66, 0.8, 0.98) renders as **mauve**. Any sky gradient that eases toward that horizon color smears purple across the dome. `sky.wgsl atmosphere()` therefore builds its horizon reference from a cyan-leaning, AgX-safe blue (`vec3f(0.42, 0.58, 0.78)`) — **not** the keyframe horizon — and anchors the physical (Preetham) sky toward that blue gradient. Anchor strength is scaled by sun elevation (`mix(0.2, 0.85, smoothstep(0.15, 0.5, sunElev))`) so golden-hour/dawn warmth survives while midday stays blue. The CPU mirror is `atmo.js computeAtmosphereSkyColorInto` — keep it in sync.
+- **`sceneTexture` is HDR (`rgba16float`) — bright sources are written well above 1.0.** The format is `SCENE_FORMAT` in `gpu-buffers.js` (`rgba16float`, or `rgba8unorm` on `S.lowSpec` to save TBDR bandwidth — highlights clip there, as they used to everywhere). **Every pipeline that draws into `sceneTexture` must use `SCENE_FORMAT`** (all the scene-pass pipelines in `gpu-pipelines.js` plus the fireworks pass); a mismatch is a validation error. Because the buffer holds pre-tonemap HDR, the sun disc (`sky.wgsl`, driven to ~14×), emissive bike lamps, etc. survive to postprocess, where `filmicTonemap()` (AgX, EV range up to +4 ≈ 16×) rolls them off into hot highlights instead of a flat clipped white. Bloom still adds glare (`bloom-extract.wgsl` ramps from `threshold` over `threshold * 0.15`), but it no longer does _all_ the brightness work — a bright source now reads bright on its own. Keep daytime `bloomThreshold` ~0.85–0.92 (above pale-sky luminance ≈ 0.78) so only the sun/lamps bloom, not the whole sky. If you ever make the sun/lights look washed out again, first check that `sceneTexture` (and the pipelines writing it) are still float, not `rgba8unorm`.
+- **Debug method that works:** hardcode `atmosphere()` to return a known constant (green, then `sky.zenithColor`, then `sky.horizonColor`) and screenshot with `scripts/shot.mjs` — this isolates whether a cast lives in the sky content or in postprocess.
 
 ## Architecture
 

@@ -12,7 +12,7 @@ export function buildIntro(sunPosition) {
   const { x, y, z } = sunPosition
   const [tx, ty, tz] = [0, 0.6, 10.0]
   return [
-    {
+    { // inside r
       type: PATH.LINEAR_QUAT,
       duration: 3,
       from: [-12.76, 2.03, 5.86, -0.43 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
@@ -20,9 +20,16 @@ export function buildIntro(sunPosition) {
       fixedHeight: true,
       fadeIn: true,
       fadeOut: true,
-      timeOverrides: { timeOfDay: constVal(17.5), rain: constVal(0.0) },
+      timeOverrides: {
+        timeOfDay: constVal(17.5),
+        rain: constVal(0.0),
+        cloudBase: constVal(70),
+        cloudTop: constVal(130),
+        cloudCoverage: constVal(0.49),
+        cloudSigmaE: constVal(0.09),
+      },
     },
-    {
+    { // inside o - timelapse
       type: PATH.LINEAR_QUAT,
       duration: 4,
       from: [-2.33, 1.56, 8.8, -0.89 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
@@ -32,12 +39,12 @@ export function buildIntro(sunPosition) {
       fadeIn: true,
       fadeOut: true,
       timeOverrides: {
-        timeOfDay: { from: 9, to: 19 },
+        timeOfDay: { from: 0.5, to: 19 },
         dofBlurFar: { from: 1, to: 10001 },
-        dofFocusFar: { from: 0.1, to: 10000 }
+        dofFocusFar: { from: 0.1, to: 10000 },
       },
     },
-    {
+    { // over the text at night
       type: PATH.LINEAR_QUAT,
       duration: 10,
       from: [4.74, 3.5, 11.53, -0.4 * Math.PI, -0.5 * Math.PI, 0.0],
@@ -47,19 +54,20 @@ export function buildIntro(sunPosition) {
       fadeIn: true,
       fadeOut: true,
       timeOverrides: {
-        timeOfDay: { from: 0.1, to: 23.9 },
+        timeOfDay: constVal(21.5),
         rain: constVal(0.0),
         depthOfField: constVal(0),
       },
     },
-    {
+    { // timelapse move over the field
       type: PATH.LINEAR_QUAT,
       duration: 8,
-      from: [ 30, 1.0, 20, -2.0 * 2.73, -0.02, 0.0],
-      to:   [-20, 1.0, 20, -1.73, -0.02, 0.0],
+      from: [30, 1.0, 20, -2.0 * 2.73, -0.02, 0.0],
+      to: [-20, 1.0, 20, -1.73, -0.02, 0.0],
       fixedHeight: true,
       rawT: false,
       fadeIn: true,
+      fadeOut: true,
       timeOverrides: {
         timeOfDay: { from: 5.9, to: 20.5 },
         cloudCoverage: { from: 0.45, to: 0.5 },
@@ -68,29 +76,31 @@ export function buildIntro(sunPosition) {
         cloudDensity: { from: 0.4, to: 0.2 },
         rain: constVal(0.0),
         depthOfField: constVal(S.isMobile ? 0.0 : 1.1),
-        cloudBase: constVal(30.0),
-        cloudTop: { from: 31, to: 90.0 },
+        cloudBase: constVal(70.0),
+        cloudTop: { from: 100, to: 90.0 },
       },
     },
-    {
+    /*{ // end of field time lapse
       type: PATH.STATIC,
       duration: 1.0,
       at: [-20, 1.0, 20],
       fixedHeight: true,
       fadeOut: true,
-      rawT: true,
-    },
-    {
+      //rawT: true,
+      timeOfDay: { from: 20.5, to: 23.5 },
+    },*/
+    { // looking up from grass to the sun
       type: PATH.STATIC,
       duration: 5,
       at: [-20, 0.001, 20],
       lookAt: [-1, 15, -1],
       rawT: true,
       timeOverrides: {
+        lensFlareIntensity: constVal(2.0),
+        depthOfField: constVal(S.isMobile ? 0 : 0.2),
         grassWidthFactor: constVal(0.25),
         grassHeightFactor: constVal(1.0),
         godRaySteps: constVal(S.isMobile ? 32 : 64),
-        depthOfField: constVal(S.isMobile ? 0 : 0.5),
         cloudSteps: constVal(S.isMobile ? 8 : 12),
         cloudShadowSteps: constVal(S.isMobile ? 2 : 3),
         cloudBase: null,
@@ -99,10 +109,9 @@ export function buildIntro(sunPosition) {
         rain: constVal(0.0),
         cloudCoverage: constVal(1.0),
         timeOfDay: constVal(12.0),
-        lensFlareIntensity: { from: 0.6, to: 0.26 },
       },
     },
-    {
+    { // move in front of text
       type: PATH.LINEAR_LOOKAT,
       duration: 3,
       from: [-20, 0.001, 20],
@@ -110,20 +119,21 @@ export function buildIntro(sunPosition) {
       startLookAt: [-1, 15, -1],
       endLookAt: [-10, 1, 10],
       timeOverrides: {
-        depthOfField: S.isMobile ? constVal(0.0) : { from: 0.5, to: 1.34 },
+        lensFlareIntensity: { from: 2.0, to: 1.0 },
+        depthOfField: S.isMobile ? constVal(0.0) : { from: 0.1, to: 1.34 },
         grassHeightFactor: { from: 1.0, to: 0.25 },
         grassWidthFactor: constVal(0.25),
         timeOfDay: { from: 12.0, to: 16.0 },
         cloudCoverage: { from: 1.0, to: 0.59 },
       },
     },
-    {
+    { // look at text
       type: PATH.STATIC,
       duration: 0.5,
       at: [0, 0.4, 0],
       lookAt: [-10, 1, 10],
     },
-    {
+    { // make it rain
       type: PATH.LINEAR_POS,
       duration: 0.5,
       from: [0, 0.4, 0],
@@ -133,7 +143,7 @@ export function buildIntro(sunPosition) {
         rain: { from: 0.0, to: 1.0 },
       },
     },
-    {
+    { // watch grass grow
       type: PATH.STATIC,
       duration: 4,
       at: [0, 0.4, 0],
@@ -142,9 +152,9 @@ export function buildIntro(sunPosition) {
         grassWidthFactor: { from: 0.25, to: 1.0 },
         grassHeightFactor: { from: 0.25, to: 1.0 },
       },
-    },
+    }, // pause
     { type: PATH.STATIC, duration: 2, at: [0, 0.4, 0], lookAt: [-10, 1, 10] },
-    {
+    { // cinematic shot
       type: PATH.LINEAR_QUAT,
       duration: 6,
       from: [0.81, 0.94, 7.93, -0.55 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
@@ -152,7 +162,8 @@ export function buildIntro(sunPosition) {
       fixedHeight: true,
       fadeIn: true,
       fadeOut: true,
-      timeOverrides: { 
+      timeOverrides: {
+        lensFlareIntensity: null,
         rain: constVal(0.0),
         timeOfDay: constVal(20.6),
         turbidity: constVal(2.28),
@@ -162,20 +173,20 @@ export function buildIntro(sunPosition) {
         cloudCoverage: constVal(0.45),
         cloudDensity: constVal(0.03),
         cloudSteps: constVal(6),
-        godRayIntensity: constVal(2.3),
+        godRayIntensity: constVal(3.3),
         godRayDecay: constVal(0.84),
         godRaySteps: constVal(64),
         dofFocusNear: constVal(2.5),
         dofBlurNear: constVal(0.5),
-        dofFocusFar: constVal(20),
-        dofBlurFar: constVal(100),
+        dofFocusFar: constVal(500),
+        dofBlurFar: constVal(600),
       },
     },
-    {
+    { // fly through th e text
       type: PATH.LINEAR_QUAT,
       duration: 8.0,
       from: [tx - 4.5, 1.0, 20, 0.0 * Math.PI, 0, -0.25],
-      to: [tx - 12.5, 1.5, -3, -1.0 * Math.PI, 0, 0.125],
+      to: [tx - 32.5, 1.5, -20, -1.5 * Math.PI, 0, 0.125],
       fadeIn: true,
       fadeOut: true,
       fixedHeight: true,
@@ -195,12 +206,12 @@ export function buildIntro(sunPosition) {
         dofFocusFar: { from: 2.5, to: 50 },
         dofBlurFar: { from: 4.0, to: 101 },
         depthOfField: { from: 1.0, to: 0.5 },
-        timeOfDay: { from: 6.0, to: 8.0 },
+        timeOfDay: constVal(6.5),
         cloudCoverage: constVal(0.59),
         rain: constVal(0.0),
       },
     },
-    {
+    { // sunrise
       type: PATH.LINEAR_QUAT,
       duration: 10.0,
       from: [0.14, 0.84, 9.36, -0.61 * Math.PI, 0.21 * Math.PI, -2.0 * Math.PI],
@@ -214,15 +225,23 @@ export function buildIntro(sunPosition) {
         cloudBase: { from: 70, to: 60 },
         cloudTop: { from: 80, to: 100 },
         cloudCoverage: { from: 0.59, to: 0.41 },
-        godRayIntensity: { from: 3.0, to: 2.2 },
+        godRayIntensity: constVal(3.9),
         godRayDecay: { from: 0.99, to: 0.75 },
+        timeOfDay: constVal(3)
+      },
+    },
+    { // watch the sun rise
+      type: PATH.STATIC,
+      duration: 4.0,
+      at: [tx - 20.74, 1.0, -0.05],
+      timeOverrides: {
         timeOfDay: { from: 3, to: 8 },
       },
     },
-    {
+    { // watch the sun rise - pause
       type: PATH.STATIC,
       fadeOut: true,
-      duration: 1.5,
+      duration: 1.0,
       at: [tx - 20.74, 1.0, -0.05],
     },
     {
@@ -243,7 +262,7 @@ export function buildIntro(sunPosition) {
         fogSteps: constVal(S.isMobile ? 12 : 16),
         godRayIntensity: constVal(0.0),
         godRayDecay: constVal(0.0),
-        timeOfDay: { from: 20, to: 23 },
+        timeOfDay: constVal(23),
         cloudCoverage: constVal(1.0),
         fogDensity: { from: 0.0, to: 0.24 },
         fogHeightFalloff: { from: 0.5, to: 2.5 },
@@ -264,26 +283,28 @@ export function buildIntro(sunPosition) {
       fixedHeight: true,
       fadeOut: true,
       timeOverrides: {
-        timeOfDay: { from: 1, to: 5 },
-        fogDensity: { from: 0.5, to: 0.8 },
+        timeOfDay: constVal(3),
+        fogDensity: constVal(0.6),
         fogIntensity: constVal(1.5),
         fogHeightFalloff: constVal(0.5),
+        windStrength: constVal(0.5),
         fogSteps: constVal(S.isMobile ? 16 : 32),
       },
     },
     {
       type: PATH.STATIC,
       duration: 3,
-      at: [0, 0.4, 0],
+      at: [0, 0.45, 0],
       lookAt: [x, y, z],
       fadeOut: true,
       timeOverrides: {
         fogSteps: constVal(S.isMobile ? 12 : 16),
-        fogHeightFalloff: constVal(0.6),
-        fogIntensity: constVal(0.3),
+        fogHeightFalloff: constVal(0.3),
+        fogIntensity: constVal(0.2),
         depthOfField: constVal(2.0),
         dewAmount: constVal(1.0),
-        time: { from: 23, to: 5 },
+        windStrength: null,
+        time: { from: 3, to: 5 },
       },
     },
     {

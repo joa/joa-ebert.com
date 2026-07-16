@@ -83,6 +83,7 @@ export function computeSunVisibility(sunDir, origin, mountainHeightmap) {
 //       You MUST always keep this in sync when updating sky.wgsl.
 //       The authority is always sky.wgsl.
 const NOISE_WRAP_SCALE = 32
+const CLOUD_OVERSHOOT = 0.2 // clouds spill this fraction of slab height past base/top (mirrors sky.wgsl)
 const NOISE_SIZE_X = NOISE_TEX_WIDTH
 const NOISE_SIZE_Y = NOISE_TEX_HEIGHT
 const NOISE_SIZE_Z = NOISE_TEX_DEPTH
@@ -155,8 +156,12 @@ function skyFbmDetail4(data, px, py, pz, timeSec) {
 }
 
 function cpuCloudDensity(data, px, py, pz, timeSec, cloudBase, cloudTop, coverage, windX, windZ) {
-  if (py < cloudBase || py > cloudTop) return 0
-  const relH = (py - cloudBase) / (cloudTop - cloudBase)
+  const margin = (cloudTop - cloudBase) * CLOUD_OVERSHOOT
+  const wobble = (skyFbm5(data, px / 260 + 8.3, py / 260, pz / 260 + 2.1, timeSec) - 0.47) * margin
+  const slabBase = cloudBase + wobble
+  const slabTop = cloudTop + wobble
+  if (py < slabBase || py > slabTop) return 0
+  const relH = (py - slabBase) / (slabTop - slabBase)
   const sat = x => Math.min(1, Math.max(0, x))
   const vEnv = smoothstep(sat(relH / 0.15)) * smoothstep(sat((1 - relH) / 0.6))
   const scale = 1 / 45

@@ -125,7 +125,7 @@ export const FRAME_UNIFORMS_SIZE = 640 // conservative, 16-byte aligned
 //   sparkleSpeed:         f32,
 //   cloudLightOcclusion:  f32,
 //   debugMode:            f32,  // ?dbg=N URL param, 0 = normal
-//   _pad:                 f32,
+//   emissiveIntensity:    f32,  // bike head/tail light glow multiplier
 // }
 // Textures: gAlbedo, gNormal, gMaterial, depth, shadowMap, cloudShadow + samplers
 
@@ -153,6 +153,9 @@ export const FRAME_UNIFORMS_SIZE = 640 // conservative, 16-byte aligned
 //   vignetteStrength:     f32,
 //   rainIntensity:        f32,
 //   rainbowIntensity:     f32,
+//   bikeParams:           vec4f,          // x=count, y=glowIntensity, z=flareIntensity
+//   bikePos:              array<vec4f,2>, // xyz world position per lamp
+//   bikeColor:            array<vec4f,2>, // rgb radiant colour per lamp
 // }
 // Textures: scene, depth, bloom, godRay, ssao, fog, gAlbedo + samplers
 
@@ -180,6 +183,11 @@ export const FRAME_UNIFORMS_SIZE = 640 // conservative, 16-byte aligned
 //   fireflyCount:       u32,
 //   fireflyFactor:      f32,
 //   fireflyLightRadius: f32,
+//   fogPad:             vec2f,
+//   fireflyData:        array<vec4f, 32>,   // xyz pos, w brightness (bytes 64..576)
+//   bikePos:            vec4f,              // headlight xyz, w = reach (0 = off)
+//   bikeColor:          vec4f,              // rgb beam colour, w = fog scatter intensity
+//   bikeDir:            vec4f,              // xyz beam axis, w = cos(cone half-angle)
 // }
 // Textures: depth, noiseTex3D + samplers
 // Storage: fireflyPositions[32], fireflyBrightness[32]
@@ -241,6 +249,19 @@ export const FRAME_UNIFORMS_SIZE = 640 // conservative, 16-byte aligned
 //   lightRadius:        f32,
 // }
 // Storage: fireflyPositions[32], fireflyBrightness[32]
+// Textures: gAlbedo, gNormal, depth + samplers
+
+// Bike Lights Pass (head/tail lamps cast onto the scene)
+// ######################################################
+// struct BikeLightUniforms {
+//   count:     u32,
+//   intensity: f32,             // master cast-light strength (day/night fade)
+//   pad0:      f32,
+//   pad1:      f32,
+//   pos:       array<vec4f, 2>, // xyz world position, w = reach, per lamp
+//   color:     array<vec4f, 2>, // rgb radiant colour, w = per-lamp intensity
+//   dir:       array<vec4f, 2>, // xyz beam axis, w = cos(cone half-angle); w > 1 = omni
+// }
 // Textures: gAlbedo, gNormal, depth + samplers
 
 // Firefly Sprites Pass

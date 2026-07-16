@@ -9,7 +9,14 @@ import SHADERS from "wgsl-shaders-bundle.js"
 import { EventModule } from "../event-module.js"
 import { FlagSystem, buildPoleMesh, FLAG_POS } from "./flag-system.js"
 import { FireworksSystem } from "./fireworks-system.js"
-import { MRT_TARGETS, DEPTH_WRITE, DEPTH_WRITE_SHADOW, ADDITIVE_BLEND, DEPTH_TEST_ONLY } from "../../gpu-pipelines.js"
+import {
+  MRT_TARGETS,
+  SCENE_FORMAT,
+  DEPTH_WRITE,
+  DEPTH_WRITE_SHADOW,
+  ADDITIVE_BLEND,
+  DEPTH_TEST_ONLY,
+} from "../../gpu-pipelines.js"
 
 const UNIFORM_USAGE = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
 const VERTEX_USAGE = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
@@ -192,7 +199,7 @@ export default class FourthOfJulyModule extends EventModule {
       fragment: {
         module: mod("fireworks.wgsl"),
         entryPoint: "fragmentMain",
-        targets: [{ format: "rgba8unorm", blend: ADDITIVE_BLEND }],
+        targets: [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }],
       },
       depthStencil: DEPTH_TEST_ONLY,
       primitive: { topology: "triangle-strip" },

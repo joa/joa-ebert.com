@@ -60,6 +60,10 @@ export class GPUContext {
   // ######
   currentTime = 0
   deltaTime = 0
+  // deltaTime scaled by the scene clock's speed (see TimeSystem.timeScale). CPU
+  // sim systems (wind, boids, effects) integrate against this so they keep pace
+  // when the day is fast-forwarded; every other consumer uses real deltaTime.
+  simDeltaTime = 0
   now = performance.now()
   get nowSec() {
     return this.now * MS_TO_SEC
