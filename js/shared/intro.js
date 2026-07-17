@@ -27,6 +27,7 @@ export function buildIntro(sunPosition) {
         cloudTop: constVal(130),
         cloudCoverage: constVal(0.49),
         cloudSigmaE: constVal(0.09),
+        depthOfField: S.isMobile ? constVal(0.0) : null,
       },
     },
     { // inside o - timelapse
@@ -205,7 +206,7 @@ export function buildIntro(sunPosition) {
         dofBlurNear: constVal(0.5),
         dofFocusFar: { from: 2.5, to: 50 },
         dofBlurFar: { from: 4.0, to: 101 },
-        depthOfField: { from: 1.0, to: 0.5 },
+        depthOfField: S.isMobile ? constVal(0.0) : { from: 2.0, to: 0.5 },
         timeOfDay: constVal(6.5),
         cloudCoverage: constVal(0.59),
         rain: constVal(0.0),
