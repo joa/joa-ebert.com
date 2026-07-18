@@ -7,7 +7,7 @@
 
 import SHADERS from "wgsl-shaders-bundle.js"
 import S from "../shared/settings.js"
-import { bloomChainFormat, SCENE_FORMAT } from "./gpu-buffers.js"
+import { bloomChainFormat, GDEPTH_FORMAT, SCENE_FORMAT } from "./gpu-buffers.js"
 
 // Re-exported so event modules (which draw into the scene pass) can match it.
 export { SCENE_FORMAT }
@@ -22,7 +22,8 @@ const VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT
 // Common render target formats
 // ############################
 
-const MRT_TARGETS = [{ format: "rgba8unorm" }, { format: "rgba8unorm" }, { format: "rgba8unorm" }]
+// G-buffer MRT: gAlbedo, gNormal, gDepth. See gbuffer.inc.wgsl for the layout.
+const MRT_TARGETS = [{ format: "rgba8unorm" }, { format: "rgba8unorm" }, { format: GDEPTH_FORMAT }]
 
 const ADDITIVE_BLEND = {
   color: { srcFactor: "one", dstFactor: "one", operation: "add" },
@@ -62,6 +63,14 @@ const DEPTH_TEST_LEQUAL = {
   format: "depth24plus",
   depthWriteEnabled: false,
   depthCompare: "less-equal",
+}
+
+// For fullscreen passes that share a render pass with depth-tested draws: the
+// attachment is declared so the pipeline is compatible, but never read or written.
+const DEPTH_IGNORE = {
+  format: "depth24plus",
+  depthWriteEnabled: false,
+  depthCompare: "always",
 }
 
 // Vertex buffer layouts
@@ -285,6 +294,11 @@ function texDepth(binding, visibility) {
   return { binding, visibility, texture: { sampleType: "depth", viewDimension: "2d" } }
 }
 
+// gDepth is r32float, which is never filterable. Readers only textureLoad it.
+function texGDepth(binding, visibility) {
+  return tex2d(binding, visibility, "unfilterable-float")
+}
+
 function samp(binding, visibility) {
   return { binding, visibility, sampler: { type: "filtering" } }
 }
@@ -328,7 +342,6 @@ export function createAllPipelines(device, presentationFormat) {
   const mod = name => modules[name]
   const vs = (wgsl, buffers = []) => ({ module: mod(wgsl), entryPoint: "vertexMain", buffers })
   const fs = (wgsl, targets) => ({ module: mod(wgsl), entryPoint: "fragmentMain", targets })
-  const fsc = (wgsl, targets, constants) => ({ module: mod(wgsl), entryPoint: "fragmentMain", targets, constants })
 
   // Grass
   // #####
@@ -476,38 +489,26 @@ export function createAllPipelines(device, presentationFormat) {
     label: "deferred lighting pass",
     entries: [
       uniform(0, F),
-      tex2d(1, F),
-      tex2d(2, F),
-      tex2d(3, F),
-      texDepth(4, F),
-      texDepth(5, F),
-      tex2d(6, F),
-      samp(7, F),
-      sampComparison(8, F),
+      tex2d(1, F), // gAlbedo
+      tex2d(2, F), // gNormal
+      texGDepth(3, F),
+      texDepth(4, F), // shadow map
+      tex2d(5, F), // cloud shadow
+      sampComparison(6, F),
     ],
   })
 
-  // Deferred lighting runs in a pass WITHOUT a depth attachment — the depth
-  // texture is bound as a sampler resource instead.  depthReadOnly: true would
-  // allow merging deferred + forward into one pass, but iOS Safari WebGPU
-  // silently fails to load the previous depth content, causing sky to
-  // overwrite all geometry.  No depthStencil on this pipeline.
+  // Depth is attached but neither tested nor written: the fullscreen triangle
+  // must cover every pixel, and world position comes from gDepth rather than the
+  // depth texture. Attaching it (instead of sampling it) is what lets this pass
+  // also hold the sky and the forward effects — see Renderer#renderScenePass.
   pipelines.deferredLighting = device.createRenderPipeline({
     label: "deferred-lighting",
     layout: pLayout(frameLayout, passLayouts.deferredLighting),
     vertex: vs("deferred-lighting.wgsl"),
     fragment: fs("deferred-lighting.wgsl", [{ format: SCENE_FORMAT }]),
     primitive: { topology: "triangle-list" },
-  })
-
-  // Mobile variant: background pixels are discarded so the sky drawn in the same
-  // pass shows through. Eliminates the need for a separate forward pass for sky.
-  pipelines.deferredLightingDiscard = device.createRenderPipeline({
-    label: "deferred-lighting-discard",
-    layout: pLayout(frameLayout, passLayouts.deferredLighting),
-    vertex: vs("deferred-lighting.wgsl"),
-    fragment: fsc("deferred-lighting.wgsl", [{ format: SCENE_FORMAT }], { skipBackground: 1 }),
-    primitive: { topology: "triangle-list" },
+    depthStencil: DEPTH_IGNORE,
   })
 
   // Firefly Lights (deferred additive)
@@ -517,11 +518,11 @@ export function createAllPipelines(device, presentationFormat) {
     label: "firefly lights pass",
     entries: [
       uniform(0, F),
-      tex2d(1, F),
+      tex2d(1, F), // gAlbedo
       sampNonFiltering(2, F),
-      tex2d(3, F),
+      tex2d(3, F), // gNormal
       sampNonFiltering(4, F),
-      texDepth(5, F),
+      texGDepth(5, F),
       sampNonFiltering(6, F),
     ],
   })
@@ -532,6 +533,7 @@ export function createAllPipelines(device, presentationFormat) {
     vertex: vs("firefly-lights.wgsl"),
     fragment: fs("firefly-lights.wgsl", [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }]),
     primitive: { topology: "triangle-list" },
+    depthStencil: DEPTH_IGNORE,
   })
 
   // Bike Lights (deferred additive) — head/tail lamps cast onto the scene
@@ -541,11 +543,11 @@ export function createAllPipelines(device, presentationFormat) {
     label: "bike lights pass",
     entries: [
       uniform(0, F),
-      tex2d(1, F),
+      tex2d(1, F), // gAlbedo
       sampNonFiltering(2, F),
-      tex2d(3, F),
+      tex2d(3, F), // gNormal
       sampNonFiltering(4, F),
-      texDepth(5, F),
+      texGDepth(5, F),
       sampNonFiltering(6, F),
     ],
   })
@@ -556,6 +558,7 @@ export function createAllPipelines(device, presentationFormat) {
     vertex: vs("bike-lights.wgsl"),
     fragment: fs("bike-lights.wgsl", [{ format: SCENE_FORMAT, blend: ADDITIVE_BLEND }]),
     primitive: { topology: "triangle-list" },
+    depthStencil: DEPTH_IGNORE,
   })
 
   // Sky
@@ -572,17 +575,6 @@ export function createAllPipelines(device, presentationFormat) {
     vertex: vs("sky.wgsl"),
     fragment: fs("sky.wgsl", [{ format: SCENE_FORMAT }]),
     depthStencil: DEPTH_TEST_LEQUAL,
-    primitive: { topology: "triangle-list" },
-  })
-
-  // Mobile variant: drawn as the first call in the depth-less deferred pass so
-  // it covers all pixels without a depth test. deferredLightingDiscard then
-  // overwrites geometry pixels and discards background, letting the sky show through.
-  pipelines.skyNoDepth = device.createRenderPipeline({
-    label: "sky-no-depth",
-    layout: pLayout(frameLayout, passLayouts.sky),
-    vertex: vs("sky.wgsl"),
-    fragment: fs("sky.wgsl", [{ format: SCENE_FORMAT }]),
     primitive: { topology: "triangle-list" },
   })
 
@@ -970,23 +962,15 @@ export function createPassBindGroups(device, layouts, textures, views, samplers,
     groups.bird = bg(device, layouts.bird, "bird pass", [[0, buf(uniformBuffers.bird)]])
   }
 
-  // Inside the merged scene pass, the depth texture is simultaneously the
-  // pass attachment (depthReadOnly: true) AND a texture_depth_2d binding here.
-  // Apple's Metal-backed WebGPU rejects this when the binding reuses the same
-  // view object as the attachment, so use an explicit aspect: "depth-only" view.
-  const depthSampleView = views.depthSampleView ?? views.depthView
-
   if (layouts.deferredLighting && uniformBuffers.deferredLighting) {
     groups.deferredLighting = bg(device, layouts.deferredLighting, "deferred lighting pass", [
       [0, buf(uniformBuffers.deferredLighting)],
       [1, view(textures.gAlbedo)],
       [2, view(textures.gNormal)],
-      [3, view(textures.gMaterial)],
-      [4, depthSampleView],
-      [5, views.shadowMapView ?? view(textures.shadowMap)],
-      [6, views.cloudShadowView ?? view(textures.cloudShadow)],
-      [7, samplers.linearClamp],
-      [8, samplers.depthSampler],
+      [3, view(textures.gDepth)],
+      [4, views.shadowMapView ?? view(textures.shadowMap)],
+      [5, views.cloudShadowView ?? view(textures.cloudShadow)],
+      [6, samplers.depthSampler],
     ])
   }
 
@@ -997,7 +981,7 @@ export function createPassBindGroups(device, layouts, textures, views, samplers,
       [2, samplers.nearestClamp],
       [3, view(textures.gNormal)],
       [4, samplers.nearestClamp],
-      [5, depthSampleView],
+      [5, view(textures.gDepth)],
       [6, samplers.nearestClamp],
     ])
   }
@@ -1009,7 +993,7 @@ export function createPassBindGroups(device, layouts, textures, views, samplers,
       [2, samplers.nearestClamp],
       [3, view(textures.gNormal)],
       [4, samplers.nearestClamp],
-      [5, depthSampleView],
+      [5, view(textures.gDepth)],
       [6, samplers.nearestClamp],
     ])
   }

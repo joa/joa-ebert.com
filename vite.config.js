@@ -70,9 +70,11 @@ export function shaderBundlePlugin() {
         for (const filename of entries) {
           this.addWatchFile(resolve(shaderDir, filename))
         }
+        // *.inc.wgsl are include-only chunks: they carry no entry point, so they
+        // are pulled in by #include rather than compiled as pipeline modules.
         const lines = ["export default {"]
-        for (const filename of entries) {
-          const src = readFileSync(join(shaderDir, filename), "utf8")
+        for (const filename of entries.filter(f => !f.endsWith(INCLUDE_SUFFIX))) {
+          const src = resolveWGSLIncludes(readFileSync(join(shaderDir, filename), "utf8"), shaderDir, filename)
           const minified = minifyWGSL(src).replace(/`/g, "\\`").replace(/\$\{/g, "\\${")
           lines.push(`  ${JSON.stringify(filename)}: \`${minified}\`,`)
         }
@@ -81,6 +83,23 @@ export function shaderBundlePlugin() {
       }
     },
   }
+}
+
+const INCLUDE_SUFFIX = ".inc.wgsl"
+const INCLUDE_DIRECTIVE = /^[ \t]*#include[ \t]+"([^"]+)"[ \t]*$/gm
+
+// Textually expands `#include "x.inc.wgsl"`. Each chunk is emitted at most once
+// per shader, so diamond includes collapse instead of redeclaring symbols.
+function resolveWGSLIncludes(src, shaderDir, origin, seen = new Set()) {
+  return src.replace(INCLUDE_DIRECTIVE, (_, name) => {
+    if (!name.endsWith(INCLUDE_SUFFIX)) {
+      throw new Error(`${origin}: #include "${name}" must name a *${INCLUDE_SUFFIX} chunk`)
+    }
+    if (seen.has(name)) return ""
+    seen.add(name)
+    const chunk = readFileSync(join(shaderDir, name), "utf8")
+    return resolveWGSLIncludes(chunk, shaderDir, name, seen)
+  })
 }
 
 function minifyWGSL(src) {

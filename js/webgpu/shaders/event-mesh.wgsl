@@ -10,6 +10,8 @@
 //   roughness f32
 // Group 3: model matrix (ObjectUniforms, 64 bytes)
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -66,19 +68,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return VertexOutput(frame.projectionMatrix * frame.viewMatrix * worldPos, worldPos.xyz, worldNormal);
 }
 
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
-}
-
 @fragment
 fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let n = normalize(input.worldNormal);
   let shinN = 1.0 - mesh.roughness; // smooth surfaces get higher shininess + specular
-  return GBufferOutput(
-    vec4f(mesh.albedo, 2.0 / 3.0),
-    vec4f(n * 0.5 + 0.5, 0.0),
-    vec4f(shinN, 0.05, 0.0, shinN * 0.7),
-  );
+  return encodeGBuffer(mesh.albedo, MAT_EVENT, n, vec2f(shinN, 0.0), input.position.z);
 }

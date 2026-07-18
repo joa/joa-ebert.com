@@ -5,6 +5,8 @@
 // albedo and material (roughness / metalness) are baked per-vertex from the
 // model's glTF materials rather than supplied as a single uniform.
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -66,12 +68,6 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   );
 }
 
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
-}
-
 @fragment
 fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let n = normalize(input.worldNormal);
@@ -84,12 +80,11 @@ fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let shininess = clamp(2.0 / (roughness * roughness) - 2.0, 0.0, 255.0);
   let specScale = mix(0.25, 0.9, metalness);
 
-  // Emissive strength rides in the normal target's alpha (extraData). The bike
-  // shares the text material ID, and text writes 0 there, so the deferred pass
-  // reads any non-zero value as self-illumination for the head/tail lights.
-  return GBufferOutput(
-    vec4f(input.color, 2.0 / 3.0),
-    vec4f(n * 0.5 + 0.5, input.emissive),
-    vec4f(shininess / 256.0, 0.1, 0.0, specScale),
-  );
+  // The head/tail lamps are self-illuminating and skip shading entirely, so they
+  // take their own material ID and spend the payload on emissive strength
+  // instead of the shininess/specular pair the rest of the frame needs.
+  if (input.emissive > 0.001) {
+    return encodeGBuffer(input.color, MAT_BIKE_LAMP, n, vec2f(input.emissive, 0.0), input.position.z);
+  }
+  return encodeGBuffer(input.color, MAT_BIKE, n, vec2f(shininess / 256.0, specScale), input.position.z);
 }

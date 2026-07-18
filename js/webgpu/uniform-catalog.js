@@ -127,7 +127,7 @@ export const FRAME_UNIFORMS_SIZE = 640 // conservative, 16-byte aligned
 //   debugMode:            f32,  // ?dbg=N URL param, 0 = normal
 //   emissiveIntensity:    f32,  // bike head/tail light glow multiplier
 // }
-// Textures: gAlbedo, gNormal, gMaterial, depth, shadowMap, cloudShadow + samplers
+// Textures: gAlbedo, gNormal, gDepth, shadowMap, cloudShadow + comparison sampler
 
 // Post-Process Pass
 // #################

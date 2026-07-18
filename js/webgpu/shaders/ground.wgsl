@@ -3,6 +3,8 @@
 //
 // Ground plane with heightmap displacement, outputs to G-buffer.
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -109,12 +111,6 @@ fn bumpGrad(p: vec2f) -> vec2f {
   return vec2f(h0 - hR, h0 - hU) * (1.0 / e * 0.60);
 }
 
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
-}
-
 /*@fragment
 fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let xz = input.worldPos.xz;
@@ -147,20 +143,12 @@ fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let bumpN = normalize(input.normal + vec3f(-bg.x * 0.55, 0.0, -bg.y * 0.55));
   let creviceAO = mix(0.76, 1.0, soilMask);
 
-  return GBufferOutput(
-    vec4f(base, 1.0 / 3.0),
-    vec4f(bumpN * 0.5 + 0.5, creviceAO),
-    vec4f(20.0 / 256.0, 0.0, 0.0, 0.09),
-  );
+  return encodeGBuffer(base, MAT_GROUND, bumpN, vec2f(creviceAO, 0.0), input.position.z);
 }*/
 
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let soil = mix(vec3f(0.11, 0.19, 0.07), vec3f(0.18, 0.13, 0.07), 0.2);
-  return GBufferOutput(
-    vec4f(soil, 1.0 / 3.0),
-    vec4f(input.normal, 1.0),
-    vec4f(20.0 / 256.0, 0.0, 0.0, 0.09),
-  );
+  return encodeGBuffer(soil, MAT_GROUND, input.normal, vec2f(1.0, 0.0), input.position.z);
 }

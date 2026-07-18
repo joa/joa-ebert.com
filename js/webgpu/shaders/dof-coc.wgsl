@@ -8,6 +8,8 @@
 // well-sampled, and the box-downsample pre-blends the thin alpha-tested grass so
 // the blur can't smear it into vertical streaks (the full-res gather's failure).
 
+#include "gbuffer.inc.wgsl"
+
 struct DofUniforms {
   near: f32,
   far: f32,
@@ -60,7 +62,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
       col += textureLoad(sceneTex, c, 0).rgb;
       // Birds (matID 3) are a stylistic sharp flock — exclude them from the CoC
       // so they never defocus into opaque bokeh blobs. Treat as far (raw 1.0).
-      let isBird = i32(round(textureLoad(gAlbedoTex, c, 0).a * 3.0)) == 3;
+      let isBird = decodeMatID(textureLoad(gAlbedoTex, c, 0).a) == MAT_BIRD;
       nearestRaw = min(nearestRaw, select(textureLoad(depthTex, c, 0), 1.0, isBird));
     }
   }

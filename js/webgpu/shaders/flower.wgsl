@@ -7,6 +7,8 @@
 // an alpha-tested dither, matching the grass pipeline. Outputs to the G-buffer
 // as foliage (matID 0) so it shares the grass lighting/translucency path.
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -125,12 +127,6 @@ struct FragmentInput {
   @location(2) normal: vec3f,
   @location(3) @interpolate(flat) kind: f32,
   @location(4) @interpolate(flat) seed: f32,
-}
-
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
 }
 
 fn h11(x: f32) -> f32 {
@@ -283,10 +279,6 @@ fn fragmentMain(input: FragmentInput) -> GBufferOutput {
     discard;
   }
 
-  // Foliage material (matID 0) — shares the grass lighting/translucency path.
-  return GBufferOutput(
-    vec4f(res.rgb, 0.0),
-    vec4f(normalize(input.normal) * 0.5 + 0.5, input.uv.y),
-    vec4f(24.0 / 256.0, 0.0, 0.55, 0.28),
-  );
+  // Foliage shares the grass material, and so its lighting/translucency path.
+  return encodeGBuffer(res.rgb, MAT_GRASS, input.normal, vec2f(input.uv.y, 0.0), input.fragCoord.z);
 }

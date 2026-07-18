@@ -3,6 +3,8 @@
 //
 // Fullscreen deferred lighting pass for firefly point lights (additive).
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -42,7 +44,7 @@ struct FireflyLightUniforms {
 @group(1) @binding(2) var gAlbedoSampler: sampler;
 @group(1) @binding(3) var gNormalTex: texture_2d<f32>;
 @group(1) @binding(4) var gNormalSampler: sampler;
-@group(1) @binding(5) var depthTex: texture_depth_2d;
+@group(1) @binding(5) var gDepthTex: texture_2d<f32>;
 @group(1) @binding(6) var depthSampler: sampler;
 
 struct FullscreenVertexOutput {
@@ -65,18 +67,15 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     return vec4f(0.0);
   }
 
-  let depthDims = textureDimensions(depthTex);
-  let depthCoord = vec2i(vec2f(depthDims) * input.texCoord);
-  let depth = textureLoad(depthTex, depthCoord, 0);
+  let gDims = textureDimensions(gAlbedoTex);
+  let gCoord = vec2i(vec2f(gDims) * input.texCoord);
+  let depth = textureLoad(gDepthTex, gCoord, 0).r;
   if (depth >= 0.9999) {
     return vec4f(0.0);
   }
 
-  let gDims = textureDimensions(gAlbedoTex);
-  let gCoord = vec2i(vec2f(gDims) * input.texCoord);
   let albedo = textureLoad(gAlbedoTex, gCoord, 0).rgb;
-  let normalEncoded = textureLoad(gNormalTex, gCoord, 0).rgb;
-  let N = normalize(normalEncoded * 2.0 - 1.0);
+  let N = decodeNormalOct(textureLoad(gNormalTex, gCoord, 0).rg);
 
   let ndc = vec4f(input.texCoord.x * 2.0 - 1.0, 1.0 - input.texCoord.y * 2.0, depth, 1.0);
   let worldP4 = frame.invViewProjectionMatrix * ndc;

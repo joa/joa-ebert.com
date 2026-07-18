@@ -14,6 +14,8 @@
 //   location 1: normal    vec3f (bytes 12–23)
 //   location 2: uv        vec2f (bytes 24–31)
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -145,12 +147,6 @@ fn flagAlbedo(uv: vec2f) -> vec3f {
   return col;
 }
 
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
-}
-
 @fragment
 fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let n = normalize(input.normal);
@@ -159,9 +155,5 @@ fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let facingN = select(-n, n, dot(n, toCamera) >= 0.0);
 
   let albedo = flagAlbedo(input.uv);
-  return GBufferOutput(
-    vec4f(albedo, 2.0 / 3.0),
-    vec4f(facingN * 0.5 + 0.5, 0.0),
-    vec4f(0.0, 0.2, 0.0, 0.0),
-  );
+  return encodeGBuffer(albedo, MAT_FLAG, facingN, NO_PAYLOAD, input.position.z);
 }

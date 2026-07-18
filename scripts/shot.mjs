@@ -5,9 +5,9 @@ import puppeteer from "puppeteer"
 import { pathToFileURL } from "url"
 import { resolve } from "path"
 
-const APP_DIR = "C:/Users/joaeb/code/joa-ebert.com"
-const OUT_DIR =
-  "C:/Users/joaeb/AppData/Local/Temp/claude/C--Users-joaeb-code-joa-ebert-com/1cc9044a-6ee1-4e1c-aee2-2796fdefe56f/scratchpad"
+const APP_DIR = process.env.SHOT_APP_DIR
+const OUT_DIR = process.env.SHOT_OUT_DIR
+
 const { shaderBundlePlugin } = await import("../vite.config.js")
 
 const hours = (process.argv[2] ?? "14.33").split(",").map(parseFloat)
@@ -67,7 +67,9 @@ try {
   const page = await browser.newPage()
   page.on("pageerror", e => console.error("[shot] page error:", e.message))
   await page.setViewport({ width, height, deviceScaleFactor: 1 })
-  await page.goto(`${harnessURL}?mode=full&capture`, { waitUntil: "load" })
+  // DBG=N forwards the renderer's ?dbg= G-buffer visualisation modes.
+  const dbg = process.env.DBG ? `&dbg=${process.env.DBG}` : ""
+  await page.goto(`${harnessURL}?mode=full&capture${dbg}`, { waitUntil: "load" })
   await page.evaluate(() => window.placeholders.ready)
   // Optional close-up camera override: CAM='[[px,py,pz],[lx,ly,lz]]'
   if (process.env.CAM) {

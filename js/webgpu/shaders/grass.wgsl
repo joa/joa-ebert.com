@@ -3,6 +3,8 @@
 //
 // Instanced grass blades with Bezier curve wind animation, outputs to G-buffer.
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -198,13 +200,6 @@ struct FragmentInput {
   @location(7) @interpolate(flat) bladeSeed: f32,
 }
 
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
-}
-
-
 // 1D value noise used to carve ragged silhouettes into the blade quad.
 fn h11(x: f32) -> f32 {
   return fract(sin(x * 127.1) * 43758.5453);
@@ -353,9 +348,5 @@ fn fragmentMain(input: FragmentInput) -> GBufferOutput {
     discard;
   }
 
-  return GBufferOutput(
-    vec4f(grassColor, 0.0),
-    vec4f(normalize(input.normal) * 0.5 + 0.5, h),
-    vec4f(24.0 / 256.0, 0.0, 0.55, 0.28),
-  );
+  return encodeGBuffer(grassColor, MAT_GRASS, input.normal, vec2f(h, 0.0), input.fragCoord.z);
 }

@@ -3,6 +3,8 @@
 //
 // Instanced bird with wing beat animation. Outputs to G-buffer (MRT).
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -73,17 +75,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return VertexOutput(frame.projectionMatrix * frame.viewMatrix * vec4f(worldPos, 1.0));
 }
 
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
-}
-
 @fragment
-fn fragmentMain() -> GBufferOutput {
-  return GBufferOutput(
-    vec4f(bird.birdColor, 1.0),
-    vec4f(0.5, 1.0, 0.5, 0.0),
-    vec4f(0.0),
-  );
+fn fragmentMain(@builtin(position) fragCoord: vec4f) -> GBufferOutput {
+  // Birds take flat ambient shading, so the normal is never read back.
+  return encodeGBuffer(bird.birdColor, MAT_BIRD, vec3f(0.0, 1.0, 0.0), NO_PAYLOAD, fragCoord.z);
 }

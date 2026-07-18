@@ -112,6 +112,7 @@ const FIREFLY_SLOTS = 32
 const UNIFORM_USAGE = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
 const CLEAR_TRANSPARENT = Object.freeze({ r: 0, g: 0, b: 0, a: 0 })
 const CLEAR_BLACK = Object.freeze({ r: 0, g: 0, b: 0, a: 1 })
+const CLEAR_FAR_DEPTH = Object.freeze({ r: 1, g: 0, b: 0, a: 0 })
 const CLEAR_WHITE = Object.freeze({ r: 1, g: 1, b: 1, a: 1 })
 
 const COMPACT_OVERRIDES = Object.freeze({
@@ -676,7 +677,7 @@ export class Renderer {
     this.#rtViews = {
       gAlbedo: rt.gAlbedo.createView(),
       gNormal: rt.gNormal.createView(),
-      gMaterial: rt.gMaterial.createView(),
+      gDepth: rt.gDepth.createView(),
       sceneTexture: rt.sceneTexture.createView(),
     }
     for (const t of [
@@ -714,7 +715,7 @@ export class Renderer {
         noiseTex: this.#noiseTexture,
         gAlbedo: rt.gAlbedo,
         gNormal: rt.gNormal,
-        gMaterial: rt.gMaterial,
+        gDepth: rt.gDepth,
         shadowMap: this.#shadowMapTexture,
         cloudShadow: this.#cloudShadowTexture,
       },
@@ -873,7 +874,7 @@ export class Renderer {
 
     if (this.#renderTargets) {
       const rt = this.#renderTargets
-      for (const k of ["gAlbedo", "gNormal", "gMaterial", "sceneTexture"]) rt[k]?.destroy()
+      for (const k of ["gAlbedo", "gNormal", "gDepth", "sceneTexture"]) rt[k]?.destroy()
       for (const k of ["ssao", "ssaoPrev", "ssaoBlur", "bloomExtract", "godRay", "dofDown", "dofBlur"])
         rt[k]?.texture?.destroy()
       for (const m of rt.bloomMips) m.texture.destroy()
@@ -930,12 +931,12 @@ export class Renderer {
     const BIKE_HEIGHT_WU = 2.0
     const BIKE_LEAN_RAD = 0.16
     const BIKE_YAW_RAD = -0.4 * Math.PI
-    const TEXT_X = 5.0 - 3.5 
+    const TEXT_X = 5.0 - 3.5
     const TEXT_Z = 0
 
     const { min, max } = this.#bikeBuffers.bbox
     const cx = (min[0] + max[0]) * 0.5 - 1.0
-    const cz = (min[2] + max[2]) * 0.5// - 14.2
+    const cz = (min[2] + max[2]) * 0.5 // - 14.2
     const s = BIKE_HEIGHT_WU / (max[1] - min[1])
 
     const anchor = this.#textLocalToWorld(TEXT_X, 0, TEXT_Z)
@@ -1538,9 +1539,11 @@ export class Renderer {
   #renderGBufferPass(encoder, ctx) {
     if (!this.#renderTargets) return
     const rtv = this.#rtViews
-    const mrt = view => ({ view, clearValue: CLEAR_TRANSPARENT, loadOp: "clear", storeOp: "store" })
+    const mrt = (view, clearValue = CLEAR_TRANSPARENT) => ({ view, clearValue, loadOp: "clear", storeOp: "store" })
     const pass = encoder.beginRenderPass({
-      colorAttachments: [mrt(rtv.gAlbedo), mrt(rtv.gNormal), mrt(rtv.gMaterial)],
+      // gDepth clears to the far plane to match the depth attachment: readers
+      // test it against 0.9999 to detect background.
+      colorAttachments: [mrt(rtv.gAlbedo), mrt(rtv.gNormal), mrt(rtv.gDepth, CLEAR_FAR_DEPTH)],
       depthStencilAttachment: {
         view: ctx.depthView,
         depthClearValue: 1.0,
@@ -1642,62 +1645,35 @@ export class Renderer {
     pass.end()
   }
 
-  // Scene pass splits into deferred (no depth attachment — depth bound as a
-  // texture for world-pos reconstruction) and forward (loads depth for the sky's
-  // less-equal test). iOS Safari does not support merging via depthReadOnly: true.
-  //
-  // Mobile path: draws sky (skyNoDepth) then deferred-discard in a single depth-less
-  // pass. Background pixels are discarded by the deferred shader so the sky shows
-  // through. The forward pass is then skipped when there is nothing else to draw
-  // (no rain, particles, fireflies, or event-module forward renders).
+  // Deferred lighting, sky and the forward effects share one render pass. They
+  // used to be two, because the lighting shader sampled the depth texture and so
+  // could not have it attached for the sky's less-equal test (and iOS Safari
+  // breaks on depthReadOnly: true). Reconstructing world position from gDepth
+  // instead removed that conflict — worth doing because splitting the pass cost a
+  // store and reload of the full-res HDR scene target every frame, which on a
+  // TBDR GPU is the most expensive thing in the frame after the grass itself.
   #renderScenePass(encoder, ctx, timeInfo) {
     if (!this.#renderTargets) return
-    const sceneView = this.#rtViews.sceneTexture
 
-    const deferred = encoder.beginRenderPass({
-      colorAttachments: [{ view: sceneView, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" }],
-      timestampWrites: this.#profiler?.pass("deferred"),
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: this.#rtViews.sceneTexture, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" },
+      ],
+      // SSAO, god rays and DoF all sample depth after this pass, so it must persist.
+      depthStencilAttachment: { view: ctx.depthView, depthLoadOp: "load", depthStoreOp: "store" },
+      timestampWrites: this.#profiler?.pass("scene"),
     })
-    deferred.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
-    deferred.setBindGroup(0, this.#frameBindGroup)
-    this.#drawDeferred(deferred, ctx)
-    deferred.end()
-
-    const eff = this.effectsSystem
-    const needsForward =
-      !S.lowSpec ||
-      timeInfo.rain > 0 ||
-      (eff?.particleCount ?? 0) > 0 ||
-      ((eff?.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) ||
-      ((eff?.flyCount ?? 0) > 0 && ctx.flyFactor > 0) ||
-      ((eff?.beeCount ?? 0) > 0 && ctx.beeFactor > 0) ||
-      this.#eventModules.length > 0
-
-    if (needsForward) {
-      const forward = encoder.beginRenderPass({
-        colorAttachments: [{ view: sceneView, loadOp: "load", storeOp: "store" }],
-        depthStencilAttachment: { view: ctx.depthView, depthLoadOp: "load", depthStoreOp: "store" },
-        timestampWrites: this.#profiler?.pass("forward"),
-      })
-      forward.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
-      forward.setBindGroup(0, this.#frameBindGroup)
-      this.#drawForward(forward, ctx, timeInfo)
-      forward.end()
-    }
+    pass.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
+    pass.setBindGroup(0, this.#frameBindGroup)
+    this.#drawDeferred(pass, ctx)
+    this.#drawForward(pass, ctx, timeInfo)
+    pass.end()
   }
 
   #drawDeferred(pass, ctx) {
-    // On low-spec: sky is drawn first (no depth test) so background pixels are
-    // visible through the deferred discard. Otherwise: sky is drawn in the
-    // forward pass with a depth test so no change here.
-    if (S.lowSpec && this.#passBindGroups.sky) {
-      pass.setPipeline(this.#pipelines.skyNoDepth)
-      pass.setBindGroup(1, this.#passBindGroups.sky)
-      pass.draw(3)
-    }
-
-    // Deferred lighting (fullscreen, depthCompare: always — depth read via sampler).
-    pass.setPipeline(S.lowSpec ? this.#pipelines.deferredLightingDiscard : this.#pipelines.deferredLighting)
+    // Deferred lighting (fullscreen, depthCompare: always). Background pixels are
+    // left black for the sky, which draws over them later in this same pass.
+    pass.setPipeline(this.#pipelines.deferredLighting)
     pass.setBindGroup(1, this.#passBindGroups.deferredLighting)
     pass.draw(3)
     // Firefly lights (fullscreen additive). Skip when no fireflies are visible.
@@ -1716,10 +1692,9 @@ export class Renderer {
   }
 
   #drawForward(pass, ctx, timeInfo) {
-    // Sky (depthCompare: less-equal — only writes background pixels). On low-spec
-    // the sky is already drawn in #drawDeferred (skyNoDepth), so skip it here to
-    // avoid a redundant fullscreen sky pass when the forward pass runs.
-    if (!S.lowSpec && this.#passBindGroups.sky) {
+    // Sky (depthCompare: less-equal — only shades the background pixels the
+    // deferred draw left black).
+    if (this.#passBindGroups.sky) {
       pass.setPipeline(this.#pipelines.sky)
       pass.setBindGroup(1, this.#passBindGroups.sky)
       pass.draw(3)

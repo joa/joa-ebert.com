@@ -536,6 +536,13 @@ export function bloomChainFormat(device) {
 // on TBDR GPUs. Every pipeline drawing into sceneTexture must use this format.
 export const SCENE_FORMAT = S.lowSpec ? "rgba8unorm" : "rgba16float"
 
+// gDepth carries a copy of the NDC depth each G-buffer fragment already computed,
+// so the lighting pass can reconstruct world position without sampling the depth
+// texture — which is what lets it share a render pass with the sky and forward
+// effects (see gbuffer.inc.wgsl). r32float matches depth24plus' precision where it
+// matters; r16float would band visibly in SSAO and world-position reconstruction.
+export const GDEPTH_FORMAT = "r32float"
+
 export function createRenderTargets(gpu, width, height) {
   const divisor = S.lowSpec ? 4 : 2
   const hw = Math.max(1, Math.floor(width / divisor))
@@ -548,6 +555,10 @@ export function createRenderTargets(gpu, width, height) {
   // is only ~0.1 ms, so there is nothing worth saving here).
   const ssaoW = S.lowSpec ? Math.max(1, Math.floor(width / 2)) : width
   const ssaoH = S.lowSpec ? Math.max(1, Math.floor(height / 2)) : height
+  // DoF is half-res everywhere — dof-coc.wgsl box-downsamples a fixed full-res 2×2
+  // block per texel, so it cannot follow the bloom/god-ray divisor down to quarter.
+  const dofW = Math.max(1, Math.floor(width / 2))
+  const dofH = Math.max(1, Math.floor(height / 2))
   const bloomFormat = bloomChainFormat(gpu.device)
   const makeRT = (w, h, fmt) => ({ texture: gpu.createRenderTarget(w, h, fmt), width: w, height: h })
 
@@ -562,15 +573,15 @@ export function createRenderTargets(gpu, width, height) {
   return {
     gAlbedo: gpu.createRenderTarget(width, height),
     gNormal: gpu.createRenderTarget(width, height),
-    gMaterial: gpu.createRenderTarget(width, height),
+    gDepth: gpu.createRenderTarget(width, height, GDEPTH_FORMAT),
     sceneTexture: gpu.createRenderTarget(width, height, SCENE_FORMAT),
     bloomExtract: makeRT(hw, hh, bloomFormat),
     bloomMips,
     godRay: makeRT(hw, hh),
     // Half-res DoF: signed-CoC downsample → bokeh gather. rgba16float holds the
     // signed CoC (and unclamped colour) without banding.
-    dofDown: makeRT(hw, hh, "rgba16float"),
-    dofBlur: makeRT(hw, hh, "rgba16float"),
+    dofDown: makeRT(dofW, dofH, "rgba16float"),
+    dofBlur: makeRT(dofW, dofH, "rgba16float"),
     ssao: makeRT(ssaoW, ssaoH),
     ssaoPrev: makeRT(ssaoW, ssaoH),
     ssaoBlur: S.lowSpec ? null : makeRT(width, height),

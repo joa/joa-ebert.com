@@ -163,11 +163,11 @@ CPU-side flock simulation. 500 (mobile) / 1000 (desktop) birds. Each frame: sepa
 11. CPU sun visibility + cloud light occlusion (every 4th frame)
 12. Grass/bird/effects uniform writes
 13. Sky, rain, god ray, fog, post-process uniform writes
-14. **GPU encode:** cloud shadow bake → shadow pass → G-buffer pass → scene pass (deferred lighting + sky + rain + particles + fireflies) → SSAO + blur → bloom (extract → down → up) → god rays → post-process composite → submit
+14. **GPU encode:** cloud shadow bake → shadow pass → G-buffer pass → scene pass (deferred lighting + firefly/bike lights + sky + rain + particles + fireflies, all in **one** render pass) → SSAO + blur → bloom (extract → down → up) → god rays → post-process composite → submit
 
 **Render targets (created by `createRenderTargets`):**
 
-- `gAlbedo`, `gNormal`, `gMaterial` — G-buffer MRT outputs (full-res)
+- `gAlbedo`, `gNormal`, `gDepth` — G-buffer MRT outputs (full-res). Layout, material IDs and the octahedral normal encoding are defined once in `shaders/gbuffer.inc.wgsl`, which every writer and reader `#include`s — change it there, not per shader.
 - `sceneTexture` — HDR scene color (deferred + forward merged, full-res)
 - `ssao`, `ssaoPrev`, `ssaoBlur` — temporal SSAO ping-pong (full-res)
 - `bloomExtract` — bloom bright-pass extract (half/quarter-res)
@@ -178,3 +178,5 @@ CPU-side flock simulation. 500 (mobile) / 1000 (desktop) birds. Each frame: sepa
 
 - `queue.onSubmittedWorkDone()` is used as a back-pressure gate: `#gpuFramePending` blocks new frame submission until the GPU drains the previous frame. This prevents command buffer queue growth on TBDR GPUs.
 - Post-process targets are cleared once at init/resize (not per-frame) to avoid extra TBDR flushes.
+- **Splitting a render pass costs a full store + reload of every attachment**, which is why deferred/sky/forward share one pass. Sampling a texture that is also attached forces such a split, so the deferred pass reads world position from `gDepth` rather than the depth texture (`depthReadOnly: true` would avoid the split too, but Safari/Metal silently fails to load previous depth content). Adding a pass, or sampling depth mid-scene, gives that cost straight back.
+- Prefer `loadOp: "clear"` over `"load"` on attachments the pass fully overwrites — `"load"` pulls the old contents into tile memory for nothing.

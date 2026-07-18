@@ -4,11 +4,12 @@
 // Reads the G-buffer and produces the final lit image. Fullscreen vertex
 // stage with per-material fragment lighting and debug visualization modes.
 //
-// Pipeline-overridable constant — set to 1 in the mobile scene pipeline so that
-// background pixels are discarded rather than written black. This lets the sky
-// (drawn as the first draw call in the same pass) show through without needing
-// a separate forward pass or depthReadOnly (which Safari/Metal silently breaks).
-override skipBackground: i32 = 0;
+// World position comes from gDepth, not from the depth texture: this pass shares
+// a render pass with the sky and the forward effects, so depth is attached and
+// cannot also be sampled. (depthReadOnly: true would permit it, but Safari/Metal
+// silently fails to load the previous depth content.)
+
+#include "gbuffer.inc.wgsl"
 
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
@@ -57,12 +58,10 @@ struct DeferredLightingUniforms {
 @group(1) @binding(0) var<uniform> lighting: DeferredLightingUniforms;
 @group(1) @binding(1) var gAlbedoTex: texture_2d<f32>;
 @group(1) @binding(2) var gNormalTex: texture_2d<f32>;
-@group(1) @binding(3) var gMaterialTex: texture_2d<f32>;
-@group(1) @binding(4) var depthTexture: texture_depth_2d;
-@group(1) @binding(5) var shadowMap: texture_depth_2d;
-@group(1) @binding(6) var cloudShadowTex: texture_2d<f32>;
-@group(1) @binding(7) var linearSampler: sampler;
-@group(1) @binding(8) var shadowSampler: sampler_comparison;
+@group(1) @binding(3) var gDepthTex: texture_2d<f32>;
+@group(1) @binding(4) var shadowMap: texture_depth_2d;
+@group(1) @binding(5) var cloudShadowTex: texture_2d<f32>;
+@group(1) @binding(6) var shadowSampler: sampler_comparison;
 
 struct FullscreenVertexOutput {
   @builtin(position) position: vec4f,
@@ -187,22 +186,18 @@ fn textSparkle(worldPos: vec3f, N: vec3f, H: vec3f) -> f32 {
 @fragment
 fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let uv = input.texCoord;
-  let depthDims = textureDimensions(depthTexture);
-  let depthCoord = vec2i(vec2f(depthDims) * uv);
-  let depth = textureLoad(depthTexture, depthCoord, 0);
-
   let gDims = textureDimensions(gAlbedoTex);
   let gCoord = vec2i(vec2f(gDims) * uv);
   let gAlb = textureLoad(gAlbedoTex, gCoord, 0);
   let gNrm = textureLoad(gNormalTex, gCoord, 0);
-  let gMat = textureLoad(gMaterialTex, gCoord, 0);
+  let depth = textureLoad(gDepthTex, gCoord, 0).r;
 
   // Debug output modes (enable via URL ?dbg=N):
   //   1 = depth as grayscale       (all white => depth read broken)
   //   2 = gAlbedo.rgb raw          (black => G-buffer color not written)
-  //   3 = matID color key          (red/green/blue/yellow per material)
-  //   4 = gNormal.rgb raw
-  //   5 = gMaterial.rgb raw
+  //   3 = matID color key          (one hue per material)
+  //   4 = decoded world normal
+  //   5 = gNormal payload channels
   //   6 = shadow factor
   //   7 = solid magenta            (verifies shader runs at all)
   let dbg = i32(round(lighting.debugMode));
@@ -212,38 +207,34 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   } else if (dbg == 2) {
     return vec4f(gAlb.rgb, 1.0);
   } else if (dbg == 3) {
-    let mid = i32(round(gAlb.a * 3.0));
     if (depth >= 0.9999) { return vec4f(vec3f(0.0), 1.0); }
-    if (mid == 0) { return vec4f(0.0, 1.0, 0.0, 1.0); }
-    if (mid == 1) { return vec4f(0.6, 0.4, 0.2, 1.0); }
-    if (mid == 2) { return vec4f(1.0, 1.0, 1.0, 1.0); }
-    if (mid == 3) { return vec4f(1.0, 0.0, 0.0, 1.0); }
-    return vec4f(1.0, 0.0, 1.0, 1.0);
+    let hue = f32(decodeMatID(gAlb.a)) / MAT_ID_MAX;
+    return vec4f(abs(fract(hue + vec3f(0.0, 0.667, 0.333)) * 6.0 - 3.0) - 1.0, 1.0);
   } else if (dbg == 4) {
-    return vec4f(gNrm.rgb, 1.0);
+    return vec4f(decodeNormalOct(gNrm.rg) * 0.5 + 0.5, 1.0);
   } else if (dbg == 5) {
-    return vec4f(gMat.rgb, 1.0);
+    return vec4f(gNrm.b, gNrm.a, 0.0, 1.0);
   } else if (dbg == 7) {
     return vec4f(1.0, 0.0, 1.0, 1.0);
   }
 
+  // Background stays black; the sky draws over it later in this same pass with a
+  // less-equal depth test.
   if (depth >= 0.9999) {
-    // When skipBackground is set the sky was drawn before this pass; discard so
-    // it shows through. Otherwise return black (forward pass draws sky on top).
-    if (skipBackground != 0) { discard; }
     return vec4f(vec3f(0.0), 1.0);
   }
 
   let albedo_raw = gAlb.rgb;
-  let matID = i32(round(gAlb.a * 3.0));
+  let matID = decodeMatID(gAlb.a);
+  let payload = gNrm.ba;
 
-  let N = normalize(gNrm.rgb * 2.0 - 1.0);
-  let extraData = gNrm.a;
+  let N = decodeNormalOct(gNrm.rg);
 
-  let shininess = gMat.r * 256.0;
-  let wrapFactor = gMat.g;
-  let sssStr = gMat.b;
-  let specScale = gMat.a;
+  let mat = materialFor(matID, payload);
+  let shininess = mat.shininess;
+  let wrapFactor = mat.wrapFactor;
+  let sssStr = mat.sssStrength;
+  let specScale = mat.specScale;
 
   let ndc = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
   let worldP4 = frame.invViewProjectionMatrix * ndc;
@@ -254,22 +245,22 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let H = normalize(L + V);
 
   // Bird: flat ambient, no shading
-  if (matID == 3) {
+  if (matID == MAT_BIRD) {
     return vec4f(albedo_raw * lighting.ambientIntensity, 1.0);
   }
 
-  // Emissive bike lights: the head/tail lights carry a per-vertex emissive
-  // strength in extraData (0 for every other matID-2 surface, i.e. text). Emit
-  // the lamp colour directly, scaled past the LDR ceiling so bloom picks it up.
-  if (matID == 2 && extraData > 0.001) {
-    return vec4f(albedo_raw * extraData * lighting.emissiveIntensity, 1.0);
+  // Bike head/tail lamps: self-illuminating, emissive strength in the payload.
+  // Emitted directly, scaled past the LDR ceiling so bloom picks it up.
+  if (matID == MAT_BIKE_LAMP) {
+    return vec4f(albedo_raw * payload.x * lighting.emissiveIntensity, 1.0);
   }
 
+  let isSolid = isSolidSurface(matID);
   var albedo = albedo_raw;
 
   // Grass uses view-dependent fake normal for diffuse
   var diffN = N;
-  if (matID == 0) {
+  if (matID == MAT_GRASS) {
     diffN = normalize(mix(vec3f(0.0, 1.0, 0.0), V, 0.15));
   }
 
@@ -277,10 +268,10 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let NdotUp = max(dot(diffN, vec3f(0.0, 1.0, 0.0)), 0.0);
   let wrapNdotL = max((NdotL + wrapFactor) / (1.0 + wrapFactor), 0.0);
 
-  // Text uses wider PCF radius
+  // Solid surfaces use a wider PCF radius
   var shadow: f32;
   var sunFacing = 1.0;
-  if (matID == 2) {
+  if (isSolid) {
     shadow = shadowFactorRadius(worldPos, 12.0);
     // Faces turned away from the sun are geometrically self-shadowed. This gate
     // is applied to the *direct sun* only (below), not to the skylight, so the
@@ -293,18 +284,18 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let cloudShadow = cloudShadowFactor(worldPos);
 
   // Cast-shadow visibility (drives the skylight tint) vs. direct-sun reception
-  // (additionally excludes self-shadowed back faces). For non-text sunFacing is
-  // 1, so the two are identical there.
+  // (additionally excludes self-shadowed back faces). For non-solid surfaces
+  // sunFacing is 1, so the two are identical there.
   let lit = shadow * cloudShadow * lighting.mountainVisibility * lighting.cloudLightOcclusion;
   let sunLit = lit * sunFacing;
 
   // Ground micro-AO
   var microAO = 1.0;
   var creviceAO = 1.0;
-  if (matID == 1) {
+  if (matID == MAT_GROUND) {
     let NdotUpBump = max(dot(N, vec3f(0.0, 1.0, 0.0)), 0.0);
     microAO = 0.74 + 0.26 * NdotUpBump;
-    creviceAO = extraData;
+    creviceAO = payload.x;
     albedo *= microAO * creviceAO;
   }
 
@@ -335,7 +326,7 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let castShadow = mix(1.0, shadow, sunFacing);
   let ambientShadow = mix(0.38, 1.0, castShadow);
   var ambient = albedo * ambientLight * ambientShadow;
-  if (matID == 1) {
+  if (matID == MAT_GROUND) {
     ambient *= microAO * creviceAO;
   }
 
@@ -344,9 +335,9 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let sunScale = max(1.0 - lighting.ambientIntensity * 0.6, 0.25);
   let diffBase = albedo * sunLit * wrapNdotL * sunColor;
   var diffuseColor: vec3f;
-  if (matID == 0) {
+  if (matID == MAT_GRASS) {
     diffuseColor = diffBase * sunScale * 0.85;
-  } else if (matID == 1) {
+  } else if (matID == MAT_GROUND) {
     diffuseColor = diffBase * sunScale * 0.80;
   } else {
     diffuseColor = diffBase;
@@ -355,14 +346,15 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   var color = ambient + diffuseColor;
 
   // Specular — physically-based GGX. Roughness derived from the legacy Phong
-  // exponent so no G-buffer change is needed (grass ~0.28, ground ~0.30, text
-  // ~0.16); specScale stays the per-material strength control.
+  // exponent (grass ~0.28, ground ~0.30, text ~0.16); specScale stays the
+  // per-material strength control.
   if (shininess > 0.5 && specScale > 0.0) {
     let roughness = clamp(sqrt(2.0 / (shininess + 2.0)), 0.05, 1.0);
     let spec = ggxSpecular(N, V, L, roughness, 0.04);
-    let ambGate = select(lighting.ambientIntensity, 1.0, matID == 2);
-    let heightMask = select(1.0, smoothstep(0.2, 0.85, extraData), matID == 0);
-    let specColor = select(vec3f(1.0), vec3f(0.88, 0.97, 0.72), matID == 0);
+    let isGrass = matID == MAT_GRASS;
+    let ambGate = select(lighting.ambientIntensity, 1.0, isSolid);
+    let heightMask = select(1.0, smoothstep(0.2, 0.85, payload.x), isGrass);
+    let specColor = select(vec3f(1.0), vec3f(0.88, 0.97, 0.72), isGrass);
     color += specColor * sunColor * spec * sunLit * ambGate * heightMask * specScale;
   }
 
@@ -371,9 +363,9 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   // through the blades toward the eye), so the backlit gate keeps it near-zero at
   // overhead noon and reveals it at low sun, where it is physically real. Added
   // as light so it never greys the albedo.
-  if (matID == 0) {
+  if (matID == MAT_GRASS) {
     let fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
-    let sheenHeight = smoothstep(0.35, 0.95, extraData);
+    let sheenHeight = smoothstep(0.35, 0.95, payload.x);
     let backlit = pow(max(dot(-L, V), 0.0), 3.0);
     let skySheen = mix(vec3f(1.0), coolFill, 0.5) * skyLuma;
     color += skySheen * fresnel * sheenHeight * backlit * 0.6 * lit;
@@ -382,12 +374,12 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   // SSS
   if (sssStr > 0.0) {
     let forward = pow(max(dot(-L, V), 0.0), 3.0);
-    if (matID == 0) {
-      let sssH = smoothstep(0.25, 1.0, extraData);
+    if (matID == MAT_GRASS) {
+      let sssH = smoothstep(0.25, 1.0, payload.x);
       color += vec3f(0.95, 0.78, 0.22) * forward * lit * sssStr * lighting.ambientIntensity * sssH;
       let transForward = pow(max(dot(-L, V), 0.0), 8.0);
       color += vec3f(0.6, 0.9, 0.2) * transForward * lit * sssH * 0.4;
-    } else if (matID == 2) {
+    } else if (isSolid) {
       let sssGate = smoothstep(0.0, 0.12, L.y) * min(1.0, L.y / 0.1);
       let backBleed = max(-dot(N, L) + 0.2, 0.0) * 0.35;
       color += vec3f(1.0, 0.82, 0.55) * (forward * 0.5 + backBleed) * lit * sssGate;
@@ -401,7 +393,7 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   // the view direction) and by cast-shadow visibility, adds that bright rim, and
   // the sky fill on the shaded front is pulled down so the silhouette reads dark
   // against the bright sky. This is the "lit silhouette + rim" of real contre-jour.
-  if (matID == 2) {
+  if (isSolid) {
     let rim = pow(1.0 - max(dot(N, V), 0.0), 2.5);
     let backlit = smoothstep(0.0, -0.55, dot(V, L));
     let rimVis = shadow * cloudShadow * lighting.mountainVisibility * lighting.cloudLightOcclusion;
@@ -410,13 +402,13 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   }
 
   // Text sparkles
-  if (matID == 2 && lighting.sparkleEnabled > 0.5) {
+  if (isSolid && lighting.sparkleEnabled > 0.5) {
     let sparkle = textSparkle(worldPos, N, H);
     color += vec3f(1.0, 0.97, 0.88) * sparkle * lighting.sparkleIntensity * lit;
   }
 
   // Moon light for text
-  if (matID == 2 && lighting.moonFactor > 0.0) {
+  if (isSolid && lighting.moonFactor > 0.0) {
     let Lm = normalize(frame.moonDirection);
     let moonColor = vec3f(0.72, 0.82, 1.0);
     let moonLit = cloudShadow * lighting.mountainVisibility * lighting.cloudLightOcclusion;
@@ -434,15 +426,16 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
 
   // Color temperature (skip at neutral to avoid per-pixel coefficient computation)
   if (abs(lighting.colorTemperature) > 0.001) {
-    let rCoeff = select(0.06, 0.10, matID == 0);
-    let gCoeff = select(0.03, 0.05, matID == 0);
-    let bCoeff = select(0.06, 0.10, matID == 0);
+    let isGrass = matID == MAT_GRASS;
+    let rCoeff = select(0.06, 0.10, isGrass);
+    let gCoeff = select(0.03, 0.05, isGrass);
+    let bCoeff = select(0.06, 0.10, isGrass);
     if (lighting.colorTemperature > 0.0) {
       color.r += lighting.colorTemperature * rCoeff;
       color.g += lighting.colorTemperature * gCoeff;
     } else {
       color.b -= lighting.colorTemperature * bCoeff;
-      if (matID == 0) {
+      if (isGrass) {
         color.r += lighting.colorTemperature * 0.05;
       }
     }

@@ -3,6 +3,8 @@
 //
 // Text mesh rendering to G-buffer (MRT). Vertex + fragment combined.
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -51,12 +53,6 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let worldPos = object.modelMatrix * vec4f(input.position, 1.0);
   let worldNormal = normalize((object.modelMatrix * vec4f(input.normal, 0.0)).xyz); // ok for uniform scale
   return VertexOutput(frame.projectionMatrix * frame.viewMatrix * worldPos, worldPos.xyz, worldNormal);
-}
-
-struct GBufferOutput {
-  @location(0) albedo: vec4f,
-  @location(1) normal: vec4f,
-  @location(2) material: vec4f,
 }
 
 // Value noise (hashed integer lattice, trilinearly interpolated). Cheap enough
@@ -147,13 +143,9 @@ fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let gz = fbm(wp * 12.0 + vec3f(0.0, 0.0, e)) - n0;
   flatN = normalize(flatN - vec3f(gx, gy, gz) * 2.2);
 
-  // Roughness varies with grain (weathered patches are rougher). Encoded as the
-  // legacy Phong exponent in material.r; higher exponent = smoother.
+  // Roughness varies with grain (weathered patches are rougher). Carried as the
+  // legacy Phong exponent; higher exponent = smoother.
   let shininess = mix(55.0, 105.0, mottle) * mix(1.0, 0.7, baseAmt);
 
-  return GBufferOutput(
-    vec4f(albedo, 2.0 / 3.0),
-    vec4f(flatN * 0.5 + 0.5, 0.0),
-    vec4f(shininess / 256.0, 0.5, 0.5, 0.9),
-  );
+  return encodeGBuffer(albedo, MAT_TEXT, flatN, vec2f(shininess / 256.0, 0.0), input.position.z);
 }

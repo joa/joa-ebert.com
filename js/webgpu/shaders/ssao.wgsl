@@ -3,6 +3,8 @@
 //
 // Screen-space ambient occlusion with temporal reprojection.
 
+#include "gbuffer.inc.wgsl"
+
 struct FrameUniforms {
   projectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
@@ -76,11 +78,12 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
   let fragDist = fragLin * frame.far;
   let gDims = textureDimensions(gAlbedoTex);
   let gCoord = vec2i(vec2f(gDims) * uv);
-  let fragMatID = i32(round(textureLoad(gAlbedoTex, gCoord, 0).a * 3.0));
+  let fragMatID = decodeMatID(textureLoad(gAlbedoTex, gCoord, 0).a);
 
-  // Text surfaces need larger bias to prevent surrounding terrain from flooding
+  // Solid surfaces need larger bias to prevent surrounding terrain from flooding
   // letter faces with false occlusion
-  let bias = select(ssao.ssaoBias, 0.2, fragMatID == 2);
+  let fragIsSolid = isSolidSurface(fragMatID);
+  let bias = select(ssao.ssaoBias, 0.2, fragIsSolid);
 
   // Match WebGL: use a stable per-pixel rotation only. The previous WebGPU-only
   // frame-wide jitter rotated the entire half-res sampling pattern every frame,
@@ -112,11 +115,11 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     let tapLin = linearDepth(textureLoad(depthTex, clamp(tapDC, vec2i(0), vec2i(depthDims) - 1), 0));
     let tapDist = tapLin * frame.far;
 
-    // Grass (matID 0) must not occlude text (matID 2) — only relevant for text pixels
-    if (fragMatID == 2) {
+    // Grass must not occlude solid surfaces — only relevant for those pixels
+    if (fragIsSolid) {
       let tapGC = vec2i(vec2f(gDims) * tapUV);
-      let tapMatID = i32(round(textureLoad(gAlbedoTex, clamp(tapGC, vec2i(0), vec2i(gDims) - 1), 0).a * 3.0));
-      if (tapMatID == 0) {
+      let tapMatID = decodeMatID(textureLoad(gAlbedoTex, clamp(tapGC, vec2i(0), vec2i(gDims) - 1), 0).a);
+      if (tapMatID == MAT_GRASS) {
         continue;
       }
     }
