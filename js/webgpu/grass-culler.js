@@ -10,15 +10,13 @@
 // shadow light's orthographic view-projection: both define a clip volume whose
 // planes are extracted directly from the matrix.
 
-import { TILE_SIZE, NUM_TILES, DENSE_TILES, BLADE_HEIGHT } from "./gpu-buffers.js"
+import { TILE_SIZE, TILE_UNSET, BLADE_HEIGHT } from "./gpu-buffers.js"
 
 // Worst-case blade length from buildBladeAttribs: 0.75·H + 2·0.5·H·1.5 = 2.25·H,
 // scaled per frame by timeInfo.grassHeightFactor.
 const MAX_BLADE_WU = 2.25 * BLADE_HEIGHT
 // Ground heightmap stores heights in [0,1] wu; padded for safety.
 const GROUND_MAX_WU = 1.5
-// Sentinel for tile slots the worker has not populated yet — kept visible.
-const TILE_UNSET = 0x7fffffff
 
 function aabbVisible(planes, minX, minY, minZ, maxX, maxY, maxZ) {
   // p-vertex test: check the corner farthest along each plane normal.
@@ -39,11 +37,9 @@ export class GrassCuller {
   // 6 world-space planes as (a, b, c, d) with inside ⇔ a·x + b·y + c·z + d ≥ 0.
   #planes = new Float32Array(24)
 
-  // Merged visible-slot runs per layer, as [firstSlot, slotCount] pairs.
-  sparseRanges = new Int32Array(NUM_TILES * 2)
-  denseRanges = new Int32Array(DENSE_TILES * 2)
-  sparseRangeCount = 0
-  denseRangeCount = 0
+  // Merged visible-slot runs per grass layer, as [firstSlot, slotCount] pairs.
+  ranges = []
+  rangeCounts = []
 
   // Gribb & Hartmann 2001, "Fast Extraction of Viewing Frustum Planes from the
   // World-View-Projection Matrix". WebGPU clip z ∈ [0,1], so the near plane is
@@ -139,7 +135,11 @@ export class GrassCuller {
     const bladeMaxWu = MAX_BLADE_WU * Math.max(1, grassHeightFactor)
     const maxYWu = GROUND_MAX_WU + bladeMaxWu
     const inflateWu = 1.0 + 0.5 * bladeMaxWu
-    this.sparseRangeCount = this.#cullLayer(grass.tileCoords, NUM_TILES, inflateWu, maxYWu, this.sparseRanges)
-    this.denseRangeCount = this.#cullLayer(grass.denseTileCoords, DENSE_TILES, inflateWu, maxYWu, this.denseRanges)
+    if (!this.ranges.length) this.ranges = grass.layers.map(layer => new Int32Array(layer.tileCoords.length))
+    for (let i = 0; i < grass.layers.length; i++) {
+      const layer = grass.layers[i]
+      const slotCount = layer.gridSize * layer.gridSize
+      this.rangeCounts[i] = this.#cullLayer(layer.tileCoords, slotCount, inflateWu, maxYWu, this.ranges[i])
+    }
   }
 }

@@ -26,17 +26,15 @@ export const BLADE_SEGMENTS = S.lowSpec ? 6 : 8
 export const TILE_SIZE = 2.0
 export const TILES_X = Math.ceil((2 * AREA_SIZE) / TILE_SIZE)
 export const NUM_TILES = TILES_X * TILES_X
-export const DENSE_R = S.isMobile ? 5 : 5
-export const DENSE_X = 2 * DENSE_R + 1
+export const DENSE_X = 11
 export const DENSE_TILES = DENSE_X * DENSE_X
 export const BLADES_SPARSE = S.lowSpecTBDR ? 200 : 400
 export const BLADES_DENSE = Math.round((BLADE_COUNT - NUM_TILES * BLADES_SPARSE) / DENSE_TILES)
 export const SHADOWMAP_SIZE = S.lowSpec ? 1024 : 2048
 export const GROUND_N = 256
-export const PARTICLE_COUNT = 1000
-export const FIREFLY_COUNT = 32
-export const RAIN_DROP_COUNT = 15000
 export const BLOOM_LEVELS = S.lowSpec ? 1 : 4
+// Sentinel for tile slots the grass worker has not populated yet.
+export const TILE_UNSET = 0x7fffffff
 export const NOISE_TEX_WIDTH = S.lowSpec ? 32 : 64
 export const NOISE_TEX_HEIGHT = S.lowSpec ? 32 : 64
 export const NOISE_TEX_DEPTH = S.lowSpec ? 32 : 64
@@ -63,6 +61,33 @@ function buildBladeAttribs(count) {
   return attribs
 }
 
+// One instanced grass field: a ring of gridSize² tiles around the camera, each
+// holding bladesPerTile contiguous instances. `seed` decorrelates the two fields'
+// blade placement in the voronoi worker — it is a hash input, not an index.
+// `distant` marks the field whose blades are sub-texel in the shadow map, so
+// adaptive quality may thin it there.
+function buildGrassLayer(gpu, { seed, gridSize, bladesPerTile, distant = false }) {
+  const bladeCount = gridSize * gridSize * bladesPerTile
+  const V = GPUBufferUsage.VERTEX
+  const CD = GPUBufferUsage.COPY_DST
+  return {
+    seed,
+    gridSize,
+    bladesPerTile,
+    bladeCount,
+    distant,
+    // Interleaved dynamic: [posX,posY,posZ, groundY,roll,lean] stride 24 — updated per tile scroll
+    dynamic: gpu.createBuffer(bladeCount * 6 * 4, V | CD),
+    // Interleaved static attribs: [height, baseWidth, rotation] stride 12 — set once at init
+    attribs: gpu.createBuffer(buildBladeAttribs(bladeCount), V),
+    // Per-blade noise: [tuftDist, tuftSeed, noiseX, noiseY, noiseZ] stride 20
+    noise: gpu.createBuffer(bladeCount * 5 * 4, V | CD),
+    dynamicCPU: new Float32Array(bladeCount * 6),
+    noiseCPU: new Float32Array(bladeCount * 5),
+    tileCoords: new Int32Array(gridSize * gridSize * 2).fill(TILE_UNSET),
+  }
+}
+
 export function initGrassBuffers(gpu) {
   const vertCount = (BLADE_SEGMENTS + 1) * 2
   const bladeVertices = new Float32Array(vertCount * 3)
@@ -79,36 +104,21 @@ export function initGrassBuffers(gpu) {
     bladeIndices.set([b, b + 1, b + 2, b + 1, b + 3, b + 2], i * 6)
   }
 
-  const grassCount = NUM_TILES * BLADES_SPARSE
-  const denseGrassCount = DENSE_TILES * BLADES_DENSE
-
-  const V = GPUBufferUsage.VERTEX
-  const CD = GPUBufferUsage.COPY_DST
-  const IX = GPUBufferUsage.INDEX
+  const sparse = buildGrassLayer(gpu, {
+    seed: 0,
+    gridSize: TILES_X,
+    bladesPerTile: BLADES_SPARSE,
+    distant: true,
+  })
+  const dense = buildGrassLayer(gpu, { seed: 1, gridSize: DENSE_X, bladesPerTile: BLADES_DENSE })
 
   return {
-    bladeVertices: gpu.createBuffer(bladeVertices, V),
-    bladeTexCoords: gpu.createBuffer(bladeTexCoords, V),
-    bladeIndices: gpu.createBuffer(bladeIndices, IX),
+    bladeVertices: gpu.createBuffer(bladeVertices, GPUBufferUsage.VERTEX),
+    bladeTexCoords: gpu.createBuffer(bladeTexCoords, GPUBufferUsage.VERTEX),
+    bladeIndices: gpu.createBuffer(bladeIndices, GPUBufferUsage.INDEX),
     bladeIndexCount: bladeIndices.length,
-    grassCount,
-    denseGrassCount,
-    // Interleaved dynamic: [posX,posY,posZ, groundY,roll,lean] stride 24 — updated per tile scroll
-    sparseDynamic: gpu.createBuffer(grassCount * 6 * 4, V | CD),
-    // Interleaved static attribs: [height, baseWidth, rotation] stride 12 — set once at init
-    sparseAttribs: gpu.createBuffer(buildBladeAttribs(grassCount), V),
-    denseDynamic: gpu.createBuffer(denseGrassCount * 6 * 4, V | CD),
-    denseAttribs: gpu.createBuffer(buildBladeAttribs(denseGrassCount), V),
-    // CPU mirrors for tile updates — 6 floats per blade (interleaved pos+static)
-    sparseDynamicCPU: new Float32Array(grassCount * 6),
-    denseDynamicCPU: new Float32Array(denseGrassCount * 6),
-    // Per-blade noise: [tuftDist, tuftSeed, noiseX, noiseY, noiseZ] — 5 floats, stride 20
-    sparseNoise: gpu.createBuffer(grassCount * 5 * 4, V | CD),
-    denseNoise: gpu.createBuffer(denseGrassCount * 5 * 4, V | CD),
-    sparseNoiseCPU: new Float32Array(grassCount * 5),
-    denseNoiseCPU: new Float32Array(denseGrassCount * 5),
-    tileCoords: new Int32Array(NUM_TILES * 2).fill(0x7fffffff),
-    denseTileCoords: new Int32Array(DENSE_TILES * 2).fill(0x7fffffff),
+    // Dense first: it covers the near field, so it primes depth for the sparse draw.
+    layers: [dense, sparse],
   }
 }
 
@@ -135,12 +145,14 @@ export function initFlowerBuffers(gpu) {
   ])
   const indices = new Uint16Array([0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7])
   const V = GPUBufferUsage.VERTEX
+  // Interleaved instances: [posX,posY,posZ, rotation,scale,kind,seed] — updated on tile scroll
+  const instances = gpu.createBuffer(FLOWER_COUNT * FLOWER_STRIDE * 4, V | GPUBufferUsage.COPY_DST)
   return {
-    vertices: gpu.createBuffer(verts, V),
+    instances,
+    streams: [gpu.createBuffer(verts, V), instances],
     indices: gpu.createBuffer(indices, GPUBufferUsage.INDEX),
+    indexFormat: "uint16",
     indexCount: indices.length,
-    // Interleaved instances: [posX,posY,posZ, rotation,scale,kind,seed] — updated on tile scroll
-    instances: gpu.createBuffer(FLOWER_COUNT * FLOWER_STRIDE * 4, V | GPUBufferUsage.COPY_DST),
     instanceCount: FLOWER_COUNT,
   }
 }
@@ -181,9 +193,9 @@ export function initGroundBuffers(gpu) {
     }
   }
   return {
-    vertices: gpu.createBuffer(positions, GPUBufferUsage.VERTEX),
-    texCoords: gpu.createBuffer(texCoords, GPUBufferUsage.VERTEX),
+    streams: [gpu.createBuffer(positions, GPUBufferUsage.VERTEX), gpu.createBuffer(texCoords, GPUBufferUsage.VERTEX)],
     indices: gpu.createBuffer(indices, GPUBufferUsage.INDEX),
+    indexFormat: "uint32",
     indexCount: indices.length,
   }
 }
@@ -249,66 +261,55 @@ export function initWindNoiseTexture(gpu) {
 // Rain Buffers
 // ############
 
-export function initRainBuffers(gpu, effectsSystem) {
-  if (!effectsSystem.rainPositions) return null
-  return {
-    lineOffsets: gpu.createBuffer(new Float32Array([0.0, 1.0]), GPUBufferUsage.VERTEX),
-    positions: gpu.createBuffer(effectsSystem.rainPositions, GPUBufferUsage.VERTEX),
-    count: effectsSystem.rainCount,
-  }
-}
-
-// Particle Buffers
-// ################
-
-export function initParticleBuffers(gpu, effectsSystem) {
-  if (!effectsSystem.particlePositions) return null
+export function initRainBuffers(gpu, eff) {
+  if (!eff.rainPositions) return null
   const V = GPUBufferUsage.VERTEX
-  const CD = GPUBufferUsage.COPY_DST
   return {
-    positions: gpu.createBuffer(effectsSystem.particlePositions, V | CD),
-    sizes: gpu.createBuffer(effectsSystem.particleSizes, V),
-    lives: gpu.createBuffer(effectsSystem.particleLives, V | CD),
-    phases: gpu.createBuffer(effectsSystem.particlePhases, V),
-    count: effectsSystem.particleCount,
+    streams: [gpu.createBuffer(new Float32Array([0.0, 1.0]), V), gpu.createBuffer(eff.rainPositions, V)],
+    count: eff.rainCount,
   }
 }
 
-// Firefly Buffers
-// ###############
+// Sprite Buffers (particles, fireflies, flies, bees)
+// #################################################
+//
+// All four are point sprites: an instance position stream that is rewritten
+// every frame, plus static per-instance attributes.
 
-export function initFireflyBuffers(gpu, effectsSystem) {
-  if (!effectsSystem.fireflyPositions) return null
-  const V = GPUBufferUsage.VERTEX
-  const CD = GPUBufferUsage.COPY_DST
-  return {
-    positions: gpu.createBuffer(effectsSystem.fireflyPositions, V | CD),
-    brightness: gpu.createBuffer(effectsSystem.fireflyBrightness, V | CD),
-    count: effectsSystem.fireflyCount,
-  }
-}
-
-// Insect Buffers (flies + bees)
-// #############################
-
-function initInsectBuffers(gpu, positions, sizes, phases, count) {
+function initSpriteBuffers(gpu, positions, attribs, count) {
   if (!positions) return null
   const V = GPUBufferUsage.VERTEX
-  const CD = GPUBufferUsage.COPY_DST
+  const positionBuffer = gpu.createBuffer(positions, V | GPUBufferUsage.COPY_DST)
   return {
-    positions: gpu.createBuffer(positions, V | CD),
-    sizes: gpu.createBuffer(sizes, V),
-    phases: gpu.createBuffer(phases, V),
+    positions: positionBuffer,
+    streams: [positionBuffer, ...attribs.map(a => gpu.createBuffer(a, V))],
     count,
   }
 }
 
+export function initParticleBuffers(gpu, eff) {
+  const buffers = initSpriteBuffers(gpu, eff.particlePositions, [eff.particleSizes], eff.particleCount)
+  if (!buffers) return null
+  // Lives are simulated on the CPU, so they stream alongside the positions.
+  buffers.lives = gpu.createBuffer(eff.particleLives, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST)
+  buffers.streams.push(buffers.lives, gpu.createBuffer(eff.particlePhases, GPUBufferUsage.VERTEX))
+  return buffers
+}
+
+export function initFireflyBuffers(gpu, eff) {
+  if (!eff.fireflyPositions) return null
+  const usage = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+  const positions = gpu.createBuffer(eff.fireflyPositions, usage)
+  const brightness = gpu.createBuffer(eff.fireflyBrightness, usage)
+  return { positions, brightness, streams: [positions, brightness], count: eff.fireflyCount }
+}
+
 export function initFlyBuffers(gpu, eff) {
-  return initInsectBuffers(gpu, eff.flyPositions, eff.flySizes, eff.flyPhases, eff.flyCount)
+  return initSpriteBuffers(gpu, eff.flyPositions, [eff.flySizes, eff.flyPhases], eff.flyCount)
 }
 
 export function initBeeBuffers(gpu, eff) {
-  return initInsectBuffers(gpu, eff.beePositions, eff.beeSizes, eff.beePhases, eff.beeCount)
+  return initSpriteBuffers(gpu, eff.beePositions, [eff.beeSizes, eff.beePhases], eff.beeCount)
 }
 
 // Text (GLB) Buffers
@@ -319,9 +320,12 @@ export async function initTextBuffers(gpu) {
   if (meshes.length === 0) return null
   const mesh = meshes[0]
   const normals = mesh.normals ? mesh.normals.data : new Float32Array(mesh.positions.data.length)
+  const V = GPUBufferUsage.VERTEX
+  const positions = gpu.createBuffer(mesh.positions.data, V)
   return {
-    positions: gpu.createBuffer(mesh.positions.data, GPUBufferUsage.VERTEX),
-    normals: gpu.createBuffer(normals, GPUBufferUsage.VERTEX),
+    // The shadow pass needs positions only; the G-buffer pass also needs normals.
+    shadowStreams: [positions],
+    streams: [positions, gpu.createBuffer(normals, V)],
     indices: gpu.createBuffer(mesh.indices.data, GPUBufferUsage.INDEX),
     indexCount: mesh.indices.count,
     indexFormat: mesh.indices.data instanceof Uint32Array ? "uint32" : "uint16",
@@ -349,13 +353,18 @@ export async function initBikeBuffers(gpu) {
   })
   if (!bike) return null
   const V = GPUBufferUsage.VERTEX
+  const positions = gpu.createBuffer(bike.positions, V)
   return {
-    positions: gpu.createBuffer(bike.positions, V),
-    normals: gpu.createBuffer(bike.normals, V),
-    colors: gpu.createBuffer(bike.colors, V),
-    material: gpu.createBuffer(bike.material, V),
-    emissive: gpu.createBuffer(bike.emissive, V),
+    shadowStreams: [positions],
+    streams: [
+      positions,
+      gpu.createBuffer(bike.normals, V),
+      gpu.createBuffer(bike.colors, V),
+      gpu.createBuffer(bike.material, V),
+      gpu.createBuffer(bike.emissive, V),
+    ],
     indices: gpu.createBuffer(bike.indices, GPUBufferUsage.INDEX),
+    indexFormat: "uint32",
     indexCount: bike.indexCount,
     bbox: bike.bbox,
   }
@@ -476,11 +485,10 @@ function buildBirdGeometry() {
 export function initBirdBuffers(gpu) {
   const geo = buildBirdGeometry()
   const V = GPUBufferUsage.VERTEX
-  const CD = GPUBufferUsage.COPY_DST
+  const instanceBuffer = gpu.createBuffer(BIRD_COUNT * 12 * 4, V | GPUBufferUsage.COPY_DST)
   return {
-    positions: gpu.createBuffer(geo.positions, V),
-    flex: gpu.createBuffer(geo.flex, V),
-    instanceBuffer: gpu.createBuffer(BIRD_COUNT * 12 * 4, V | CD),
+    instanceBuffer,
+    streams: [gpu.createBuffer(geo.positions, V), gpu.createBuffer(geo.flex, V), instanceBuffer],
     instanceData: new Float32Array(BIRD_COUNT * 12),
     vertexCount: geo.count,
     instanceCount: BIRD_COUNT,
@@ -491,30 +499,15 @@ export function initBirdBuffers(gpu) {
 // ###############
 
 export function initFullscreenQuad(gpu) {
+  const V = GPUBufferUsage.VERTEX
   return {
-    vertices: gpu.createBuffer(new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), GPUBufferUsage.VERTEX),
-    // WebGPU textures: y=0 at top. NDC y=-1 (bottom) must sample UV y=1, not y=0.
-    uvs: gpu.createBuffer(new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]), GPUBufferUsage.VERTEX),
+    streams: [
+      gpu.createBuffer(new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), V),
+      // WebGPU textures: y=0 at top. NDC y=-1 (bottom) must sample UV y=1, not y=0.
+      gpu.createBuffer(new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]), V),
+    ],
     vertexCount: 4,
   }
-}
-
-// SSAO Kernel
-// ###########
-
-export function generateSSAOKernel(sampleCount) {
-  const kernel = new Float32Array(sampleCount * 4)
-  for (let i = 0; i < sampleCount; i++) {
-    const angle = Math.random() * Math.PI * 2
-    const radius = Math.random()
-    const t = i / sampleCount
-    const scale = 0.1 + t * t * 0.9
-    kernel[i * 4] = Math.cos(angle) * radius * scale
-    kernel[i * 4 + 1] = Math.sin(angle) * radius * scale
-    kernel[i * 4 + 2] = (0.1 + Math.random() * 0.9) * scale
-    kernel[i * 4 + 3] = 0
-  }
-  return kernel
 }
 
 // Render Targets
@@ -560,7 +553,10 @@ export function createRenderTargets(gpu, width, height) {
   const dofW = Math.max(1, Math.floor(width / 2))
   const dofH = Math.max(1, Math.floor(height / 2))
   const bloomFormat = bloomChainFormat(gpu.device)
-  const makeRT = (w, h, fmt) => ({ texture: gpu.createRenderTarget(w, h, fmt), width: w, height: h })
+  const makeRT = (w, h, fmt) => {
+    const texture = gpu.createRenderTarget(w, h, fmt)
+    return { texture, view: texture.createView(), width: w, height: h }
+  }
 
   const bloomMips = []
   let mw = hw,
@@ -571,10 +567,10 @@ export function createRenderTargets(gpu, width, height) {
     bloomMips.push(makeRT(mw, mh, bloomFormat))
   }
   return {
-    gAlbedo: gpu.createRenderTarget(width, height),
-    gNormal: gpu.createRenderTarget(width, height),
-    gDepth: gpu.createRenderTarget(width, height, GDEPTH_FORMAT),
-    sceneTexture: gpu.createRenderTarget(width, height, SCENE_FORMAT),
+    gAlbedo: makeRT(width, height),
+    gNormal: makeRT(width, height),
+    gDepth: makeRT(width, height, GDEPTH_FORMAT),
+    sceneTexture: makeRT(width, height, SCENE_FORMAT),
     bloomExtract: makeRT(hw, hh, bloomFormat),
     bloomMips,
     godRay: makeRT(hw, hh),
@@ -585,8 +581,12 @@ export function createRenderTargets(gpu, width, height) {
     ssao: makeRT(ssaoW, ssaoH),
     ssaoPrev: makeRT(ssaoW, ssaoH),
     ssaoBlur: S.lowSpec ? null : makeRT(width, height),
-    bloomHalfW: hw,
-    bloomHalfH: hh,
+  }
+}
+
+export function destroyRenderTargets(targets) {
+  for (const target of Object.values(targets)) {
+    for (const rt of Array.isArray(target) ? target : [target]) rt?.texture.destroy()
   }
 }
 
@@ -619,9 +619,39 @@ export function createGroundHeightmap(gpu) {
   return gpu.createReadableRenderTarget(512, 512)
 }
 
-// Per-frame Uniform Buffer (640 bytes)
-// ####################################
+// Uniform Buffers
+// ###############
+//
+// A GPU uniform buffer plus its host-side staging, pre-allocated so the render
+// loop never allocates. The staging is exposed as both a Float32Array (`f`) and
+// a DataView (`dv`) so f32 slots and explicit u32 slots share one struct and
+// submit in a single writeBuffer call.
 
-export function createFrameUniformBuffer(gpu) {
-  return gpu.createBuffer(640, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST)
+export class UniformBuffer {
+  #queue
+  buffer
+  data
+  f
+  dv
+
+  constructor(gpu, label, byteSize) {
+    this.#queue = gpu.queue
+    this.buffer = gpu.device.createBuffer({
+      label,
+      size: byteSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    })
+    this.data = new ArrayBuffer(byteSize)
+    this.f = new Float32Array(this.data)
+    this.dv = new DataView(this.data)
+  }
+
+  set(values) {
+    this.f.set(values)
+    return this
+  }
+
+  write(byteOffset = 0, byteLength = this.data.byteLength - byteOffset) {
+    this.#queue.writeBuffer(this.buffer, byteOffset, this.data, byteOffset, byteLength)
+  }
 }

@@ -34,11 +34,10 @@ import S from "../shared/settings.js"
 import moonPhase from "../shared/moon.js"
 import {
   AREA_SIZE,
-  BLADES_SPARSE,
-  BLADES_DENSE,
   BLOOM_LEVELS,
   SHADOWMAP_SIZE,
   TILE_SIZE,
+  UniformBuffer,
   initFullscreenQuad,
   initNoiseTextureAsync,
   initWindNoiseTexture,
@@ -57,27 +56,20 @@ import {
   createGroundHeightmap,
   createCloudShadowTexture,
   createShadowMap,
-  createFrameUniformBuffer,
   createRenderTargets,
+  destroyRenderTargets,
 } from "./gpu-buffers.js"
 import { GPUHeightmap, GrassTileWorker, writeFrameUniforms, updateBirdInstances } from "./gpu-updates.js"
+import { UNIFORM_BYTES, BLOOM_MIP_UNIFORM_BYTES } from "./uniform-catalog.js"
 import { GpuProfiler } from "./gpu-profiler.js"
 import { GrassCuller } from "./grass-culler.js"
 import { FlowerField } from "../shared/flower-field.js"
-import {
-  createAllPipelines,
-  createPassBindGroups,
-  createEmptyBindGroup,
-  createFrameBindGroup,
-  createObjectBindGroup,
-} from "./gpu-pipelines.js"
+import { createAllPipelines, createBindGroup } from "./gpu-pipelines.js"
 import { loadActiveModules } from "./events/event-manager.js"
 import {
-  bakeMountainHeightmap,
-  bakeGroundHeightmap,
-  createCloudShadowUniformBuffer,
+  bakeOnce,
+  recordBake,
   writeCloudShadowUniforms,
-  recordCloudShadowBake,
   computeSunVisibility,
   computeCloudLightOcclusion,
 } from "./gpu-bake.js"
@@ -109,11 +101,26 @@ const LIGHTING_INTERVAL = S.lowSpec ? 13 : 4
 const MAX_SIM_TIME_SCALE = 20
 const FIREFLY_SLOTS = 32
 
-const UNIFORM_USAGE = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
 const CLEAR_TRANSPARENT = Object.freeze({ r: 0, g: 0, b: 0, a: 0 })
 const CLEAR_BLACK = Object.freeze({ r: 0, g: 0, b: 0, a: 1 })
 const CLEAR_FAR_DEPTH = Object.freeze({ r: 1, g: 0, b: 0, a: 0 })
 const CLEAR_WHITE = Object.freeze({ r: 1, g: 1, b: 1, a: 1 })
+
+// Uniform slots that never change after init. Sizes and byte layouts live in
+// uniform-catalog.js.
+const UNIFORM_SEED = {
+  shadow: [0.3], // alphaThreshold
+  grass: [1.0, 1.0, 0.3], // heightFactor, widthFactor, alphaThreshold
+  flower: [0.6, 0.5, 1.0], // sway, alphaThreshold, heightFactor
+  bird: [0.05, 0.05, 0.07, 0.6, 3.0, 0.4], // colour, then wing amplitude/beat/scale defaults
+  ssao: [16.0, 0.05, 1.0], // radius, bias, temporalAlpha
+  bloomExtract: [0.8], // threshold
+  // colour.rgb, opacity, sizeScale, kind, ambient, baseOpacity. Opacity and
+  // ambient are written per frame; the trailing slot keeps the base opacity
+  // (the shader ignores it — it maps to struct padding).
+  fly: [0.06, 0.05, 0.05, 0.85, 95.0, 0.0, 1.0, 0.85],
+  bee: [0.85, 0.6, 0.14, 0.95, 110.0, 1.0, 1.0, 0.95],
+}
 
 const COMPACT_OVERRIDES = Object.freeze({
   rain: 0,
@@ -148,38 +155,19 @@ const FRUSTUM_CORNERS_NDC = Object.freeze([
 // Module helpers
 // ##############
 
-// Host-side uniform stage: one ArrayBuffer exposed as both Float32Array (`f`)
-// and DataView (`dv`) so f32 slots and explicit u32/int slots can coexist in
-// one struct, submitted in a single writeBuffer call.
-const stage = size => {
-  const buf = new ArrayBuffer(size)
-  return { buf, f: new Float32Array(buf), dv: new DataView(buf) }
-}
-
 const parseDebugMode = () => {
   if (typeof window === "undefined") return 0
   return parseInt(new URLSearchParams(window.location.search).get("dbg") ?? "0", 10) || 0
 }
 
-// Firefly visibility in [0,1] scaled by fireflyIntensity.
-// Fades in at 18:00→18:30, full overnight, fades out at 6:00→6:30.
-const computeFireflyFactor = timeInfo => {
-  const t = timeInfo.timeOfDay
-  let f = 0
-  if (t >= 18.5 || t < 6.0) f = 1
-  else if (t >= 18.0) f = smoothstep((t - 18.0) * 2.0)
-  else if (t < 6.5) f = smoothstep(1 - (t - 6.0) * 2.0)
-  return f * timeInfo.fireflyIntensity
-}
-
-// Daytime insect visibility in [0,1]. The complement of the firefly window:
-// out overnight, fades in at 6:00→6:30, full through the day, out at 18:00→18:30.
-const computeDayFactor = timeInfo => {
-  const t = timeInfo.timeOfDay
-  if (t < 6.0 || t >= 18.5) return 0
-  if (t < 6.5) return smoothstep((t - 6.0) * 2.0)
-  if (t >= 18.0) return smoothstep(1 - (t - 18.0) * 2.0)
-  return 1
+// Night presence in [0,1]: full from 18:30 to 06:00 with 30-minute fades either
+// side. Fireflies follow it; daytime insects follow its complement (smoothstep
+// is symmetric about (0.5, 0.5), so the two always sum to 1).
+const nightFactor = timeOfDay => {
+  if (timeOfDay >= 18.5 || timeOfDay < 6.0) return 1
+  if (timeOfDay >= 18.0) return smoothstep((timeOfDay - 18.0) * 2.0)
+  if (timeOfDay < 6.5) return smoothstep(1 - (timeOfDay - 6.0) * 2.0)
+  return 0
 }
 
 const isNight = timeInfo => {
@@ -187,12 +175,23 @@ const isNight = timeInfo => {
   return t >= 18.5 || t < 6
 }
 
-const isActive = (v, threshold = 0.01) => (v ?? 0) >= threshold
+const isActive = (value, threshold = 0.01) => (value ?? 0) >= threshold
 
 const compactHourForDark = dark => (dark ? 3 : 9.5)
 
-const clearRT = (encoder, view, clearValue) => {
-  encoder.beginRenderPass({ colorAttachments: [{ view, clearValue, loadOp: "clear", storeOp: "store" }] }).end()
+const withView = texture => ({ texture, view: texture.createView() })
+
+const colorAttachment = (view, clearValue = CLEAR_BLACK, loadOp = "clear") => ({
+  view,
+  clearValue,
+  loadOp,
+  storeOp: "store",
+})
+
+const clearedDepth = view => ({ view, depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "store" })
+
+const setStreams = (pass, streams) => {
+  for (let slot = 0; slot < streams.length; slot++) pass.setVertexBuffer(slot, streams[slot])
 }
 
 export class Renderer {
@@ -209,124 +208,23 @@ export class Renderer {
   #debugMode = parseDebugMode()
   #profiler = null
 
-  // Pipelines & bind-group layouts
-  // ##############################
+  // GPU resources — all keyed by name
+  // ################################
   #pipelines = null
-  #passLayouts = null
-  #fullscreenQuad = null
-  #emptyBindGroup = null
-
-  // Geometry buffers
-  // ################
-  #grassBuffers = null
-  #flowerBuffers = null
-  #groundBuffers = null
-  #birdBuffers = null
-  #textBuffers = null
-  #bikeBuffers = null
-  #rainBuffers = null
-  #particleBuffers = null
-  #fireflyBuffers = null
-  #flyBuffers = null
-  #beeBuffers = null
-
-  // Textures & render targets
-  // #########################
-  #mountainHeightmap = new GPUHeightmap(S.lowSpec ? 1024 : 2048, 20000)
-  #groundHeightmap = new GPUHeightmap(512, 80)
-  #mountainHeightmapTexture = null
-  #groundHeightmapTexture = null
-  #noiseTexture = null
-  #noiseData = null
-  #windNoiseTexture = null
-  #shadowMapTexture = null
-  #shadowMapView = null
-  #cloudShadowTexture = null
-  #cloudShadowTextureView = null
+  #layouts = null
+  #uniforms = {} // name → UniformBuffer (bloomDown/bloomUp hold arrays)
+  #bg = {} // name → GPUBindGroup (SSAO ping-pong and bloom chains hold arrays)
+  #geo = {} // name → geometry buffers ({ streams, indices, … })
+  #tex = {} // name → { texture, view }
   #renderTargets = null
-  #rtViews = null
   #bloomUpTargets = null
+  #fullscreenQuad = null
 
-  // GPU uniform buffers
-  // ###################
-  #frameUniformBuffer = null
-  #shadowUniformBuffer = null
-  #textObjectUniformBuffer = null
-  #bikeObjectUniformBuffer = null
-  #grassUniformBuffer = null
-  #flowerUniformBuffer = null
-  #birdUniformBuffer = null
-  #deferredLightingBuffer = null
-  #fireflyUniformBuffer = null
-  #bikeLightsUniformBuffer = null
-  #ssaoUniformBuffer = null
-  #bloomExtractUniformBuffer = null
-  #bloomDownUniformBuffers = null
-  #bloomUpUniformBuffers = null
-  #skyUniformBuffer = null
-  #rainUniformBuffer = null
-  #godRayUniformBuffer = null
-  #dofUniformBuffer = null
-  #fogUniformBuffer = null
-  #particleUniformBuffer = null
-  #fireflySpriteUniformBuffer = null
-  #flyUniformBuffer = null
-  #beeUniformBuffer = null
-  #postprocessUniformBuffer = null
-  #cloudShadowUniformBuffer = null
-
-  // Bind groups
-  // ###########
-  #frameBindGroup = null
-  #shadowPassBindGroup = null
-  #textObjectBindGroup = null
-  #bikeObjectBindGroup = null
-  #cloudShadowBindGroup = null
-  #passBindGroups = null
-  #ssaoBgs = null
-  #ssaoBlurBgs = null
-  #bloomExtractBg = null
-  #bloomDownBgs = null
-  #bloomUpBgs = null
-  #godRayBg = null
-  #dofCocBg = null
-  #dofBlurBg = null
-  #particleBg = null
-  #fireflySpriteBg = null
-  #flyBg = null
-  #beeBg = null
-  #postprocessBg = null
-
-  // Host-side staging — pre-allocated to avoid per-frame GC pressure. Seeded
-  // with static slot values where applicable.
-  #frameUniformData = new Float32Array(160)
-  #deferredLightingData = new Float32Array(16)
-  #rainData = new Float32Array(8)
-  #postprocessData = new Float32Array(64)
-  #ssaoData = new Float32Array([16.0, 0.05, 1.0, 0.0]) // radius, bias, tempAlpha, pad
-  #bloomExtractData = new Float32Array(4)
-  #particleData = new Float32Array(8)
-  #fireflySpriteData = new Float32Array(8)
-  // Insect uniforms: color.rgb, opacity, sizeScale, kind, ambient, baseOpacity.
-  // opacity (slot 3) and ambient (slot 6) are written per frame; the trailing
-  // slot holds the base opacity (shader ignores it — it maps to struct pad).
-  #flyData = new Float32Array([0.06, 0.05, 0.05, 0.85, 95.0, 0.0, 1.0, 0.85])
-  #beeData = new Float32Array([0.85, 0.6, 0.14, 0.95, 110.0, 1.0, 1.0, 0.95])
-  #grassData = new Float32Array([1.0, 1.0, 0.3, 0.0])
-  // Flower uniforms: sway, alphaThreshold, heightFactor, pad
-  #flowerData = new Float32Array([0.6, 0.5, 1.0, 0.0])
-  #birdData = new Float32Array([0.05, 0.05, 0.07, 0.6, 3.0, 0.4, 0.0, 0.0])
-  #sky = stage(176)
-  #godRay = stage(48)
-  #dof = stage(32)
-  #fog = stage(624)
-  #fireflyLights = stage(528)
-  #bikeLightStage = stage(112)
+  // Host-side scratch — the render loop must not allocate.
+  // ####################################################
   #sunScreenRaw = [0, 0]
   #sunScreenPos = [0, 0]
   #prevViewProjection = null
-
-  // Per-frame matrix/vector scratch — the render loop must not allocate.
   #invView = new Float32Array(16)
   #viewProj = new Float32Array(16)
   #invViewProj = new Float32Array(16)
@@ -349,21 +247,23 @@ export class Renderer {
   #cloudShadowThisFrame = false
   #cloudSunOcclusion = 1.0
   #textModelMatrix = null
-  #bikeModelMatrix = null
   // World-space head/tail light sources, derived once from the bike transform.
-  // Each entry: { pos: [x,y,z], color: [r,g,b] }.
+  // Each entry: { pos, color, dir, cone, reachScale, intensity }.
   #bikeLights = []
   #tileBaseX = Number.NaN
   #tileBaseZ = Number.NaN
   #grassTileWorker = new GrassTileWorker()
   #flowerField = null
+  #mountainHeightmap = new GPUHeightmap(S.lowSpec ? 1024 : 2048, 20000)
+  #groundHeightmap = new GPUHeightmap(512, 80)
+  #noiseData = null
 
   // Grass frustum culling — one culler per clip volume (camera and shadow light)
   #viewCuller = new GrassCuller()
   #shadowCuller = new GrassCuller()
   #grassCullingEnabled = false
 
-  // Calendar event modules — populated in init(), empty array outside active date ranges
+  // Calendar event modules — populated in init(), empty outside active date ranges
   #eventModules = []
 
   // Public-ish systems
@@ -428,7 +328,7 @@ export class Renderer {
   }
 
   #installCompactModeHooks() {
-    for (const [k, v] of Object.entries(COMPACT_OVERRIDES)) this.timeSystem.setOverride(k, v)
+    for (const [key, value] of Object.entries(COMPACT_OVERRIDES)) this.timeSystem.setOverride(key, value)
     this.timeSystem.setOverrideTime(compactHourForDark(isDark()))
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", event => {
       this.timeSystem.setOverrideTime(compactHourForDark(event.matches), false)
@@ -445,6 +345,9 @@ export class Renderer {
     return { x, y, z }
   }
 
+  // Initialization
+  // ##############
+
   async init() {
     await this.#gpu.init(this.canvas)
     const gpu = this.#gpu
@@ -458,8 +361,8 @@ export class Renderer {
     ctx.nearestClamp = gpu.nearestClamp
 
     const noisePromise = initNoiseTextureAsync(gpu)
-    const textBuffersPromise = initTextBuffers(gpu)
-    const bikeBuffersPromise = initBikeBuffers(gpu)
+    const textPromise = initTextBuffers(gpu)
+    const bikePromise = initBikeBuffers(gpu)
 
     if (S.perfHud) this.#profiler = new GpuProfiler(gpu.device)
 
@@ -470,180 +373,86 @@ export class Renderer {
       resizeTimer = setTimeout(() => this.#resize(), 150)
     }).observe(this.canvas)
 
-    const { pipelines, passLayouts, frameLayout, objectLayout, emptyLayout } = createAllPipelines(
-      gpu.device,
-      gpu.presentationFormat
-    )
+    const { pipelines, layouts } = createAllPipelines(gpu.device, gpu.presentationFormat)
     this.#pipelines = pipelines
-    this.#passLayouts = passLayouts
+    this.#layouts = layouts
 
     this.#fullscreenQuad = initFullscreenQuad(gpu)
+    this.#createUniforms()
 
     const noise = await noisePromise
     this.#noiseData = noise.data
-    this.#noiseTexture = noise.texture
-    this.#windNoiseTexture = initWindNoiseTexture(gpu)
+    this.#tex.noise = withView(noise.texture)
+    this.#tex.windNoise = withView(initWindNoiseTexture(gpu))
+    this.#tex.shadowMap = withView(createShadowMap(gpu))
+    this.#tex.cloudShadow = withView(createCloudShadowTexture(gpu))
+    this.#tex.mountainHeightmap = withView(createMountainHeightmap(gpu))
+    this.#tex.groundHeightmap = withView(createGroundHeightmap(gpu))
 
-    this.#grassBuffers = initGrassBuffers(gpu)
-    this.#flowerBuffers = initFlowerBuffers(gpu)
-    this.#groundBuffers = initGroundBuffers(gpu)
-    this.#birdBuffers = initBirdBuffers(gpu)
-    // text and bike come in async (see below)
+    this.#geo.grass = initGrassBuffers(gpu)
+    this.#geo.flower = initFlowerBuffers(gpu)
+    this.#geo.ground = initGroundBuffers(gpu)
+    this.#geo.bird = initBirdBuffers(gpu)
 
-    this.#shadowMapTexture = createShadowMap(gpu)
-    this.#shadowMapView = this.#shadowMapTexture.createView()
-
-    // Frame uniforms (group 0, shared by every pass)
-    this.#frameUniformBuffer = createFrameUniformBuffer(gpu)
-    ctx.frameUniformBuffer = this.#frameUniformBuffer
-    this.#frameBindGroup = createFrameBindGroup(gpu.device, frameLayout, this.#frameUniformBuffer)
-    this.#emptyBindGroup = createEmptyBindGroup(gpu.device, emptyLayout)
-
-    // Shadow pass uniforms (alphaThreshold + pad)
-    this.#shadowUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    gpu.queue.writeBuffer(this.#shadowUniformBuffer, 0, new Float32Array([0.3, 0, 0, 0, 0, 0, 0, 0]))
-    this.#shadowPassBindGroup = gpu.device.createBindGroup({
-      label: "shadow pass",
-      layout: passLayouts.shadow,
-      entries: [
-        { binding: 0, resource: { buffer: this.#shadowUniformBuffer } },
-        { binding: 1, resource: this.#windNoiseTexture.createView() },
-        { binding: 2, resource: gpu.linearRepeat },
-      ],
-    })
-
-    // Text object uniform (mat4x4f)
-    this.#textObjectUniformBuffer = gpu.createBuffer(64, UNIFORM_USAGE)
-    this.#textObjectBindGroup = createObjectBindGroup(gpu.device, objectLayout, this.#textObjectUniformBuffer)
-
-    // Bike object uniform (mat4x4f)
-    this.#bikeObjectUniformBuffer = gpu.createBuffer(64, UNIFORM_USAGE)
-    this.#bikeObjectBindGroup = createObjectBindGroup(gpu.device, objectLayout, this.#bikeObjectUniformBuffer)
-
-    // Per-pass uniform buffers — seeded with static values where applicable
-    this.#grassUniformBuffer = gpu.createBuffer(16, UNIFORM_USAGE)
-    gpu.queue.writeBuffer(this.#grassUniformBuffer, 0, this.#grassData)
-    this.#flowerUniformBuffer = gpu.createBuffer(16, UNIFORM_USAGE)
-    gpu.queue.writeBuffer(this.#flowerUniformBuffer, 0, this.#flowerData)
-    this.#birdUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    gpu.queue.writeBuffer(this.#birdUniformBuffer, 0, this.#birdData)
-    this.#deferredLightingBuffer = gpu.createBuffer(64, UNIFORM_USAGE)
-    this.#fireflyUniformBuffer = gpu.createBuffer(528, UNIFORM_USAGE)
-    this.#bikeLightsUniformBuffer = gpu.createBuffer(112, UNIFORM_USAGE)
-    this.#ssaoUniformBuffer = gpu.createBuffer(16, UNIFORM_USAGE)
-    gpu.queue.writeBuffer(this.#ssaoUniformBuffer, 0, this.#ssaoData)
-    this.#bloomExtractUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#bloomDownUniformBuffers = Array.from({ length: BLOOM_LEVELS }, () => gpu.createBuffer(16, UNIFORM_USAGE))
-    this.#bloomUpUniformBuffers = Array.from({ length: BLOOM_LEVELS }, () => gpu.createBuffer(16, UNIFORM_USAGE))
-    this.#skyUniformBuffer = gpu.createBuffer(178, UNIFORM_USAGE)
-    this.#rainUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#godRayUniformBuffer = gpu.createBuffer(48, UNIFORM_USAGE)
-    this.#dofUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#fogUniformBuffer = gpu.createBuffer(624, UNIFORM_USAGE)
-    this.#particleUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#fireflySpriteUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#flyUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#beeUniformBuffer = gpu.createBuffer(32, UNIFORM_USAGE)
-    this.#postprocessUniformBuffer = gpu.createBuffer(256, UNIFORM_USAGE)
-
-    // Bake targets
-    this.#mountainHeightmapTexture = createMountainHeightmap(gpu)
-    this.#groundHeightmapTexture = createGroundHeightmap(gpu)
-    this.#cloudShadowTexture = createCloudShadowTexture(gpu)
-    this.#cloudShadowTextureView = this.#cloudShadowTexture.createView()
-
-    this.#cloudShadowUniformBuffer = createCloudShadowUniformBuffer(gpu.device)
-    this.#cloudShadowBindGroup = gpu.device.createBindGroup({
-      label: "cloud shadow bake",
-      layout: passLayouts.cloudShadowBake,
-      entries: [{ binding: 0, resource: { buffer: this.#cloudShadowUniformBuffer } }],
-    })
+    this.#createStaticBindGroups()
 
     // One-time heightmap bakes + CPU readback (async — samples available after await)
-    bakeMountainHeightmap(
-      gpu.device,
-      pipelines.mountainBake,
-      this.#mountainHeightmapTexture,
-      this.#fullscreenQuad,
-      this.#emptyBindGroup
-    )
-    bakeGroundHeightmap(
-      gpu.device,
-      pipelines.groundBake,
-      this.#groundHeightmapTexture,
-      this.#fullscreenQuad,
-      this.#emptyBindGroup
-    )
+    bakeOnce(gpu.device, pipelines.mountainBake, this.#tex.mountainHeightmap.texture, this.#fullscreenQuad, this.#bg.empty) // prettier-ignore
+    bakeOnce(gpu.device, pipelines.groundBake, this.#tex.groundHeightmap.texture, this.#fullscreenQuad, this.#bg.empty)
     await Promise.all([
-      this.#mountainHeightmap.readback(gpu.device, this.#mountainHeightmapTexture),
-      this.#groundHeightmap.readback(gpu.device, this.#groundHeightmapTexture),
+      this.#mountainHeightmap.readback(gpu.device, this.#tex.mountainHeightmap.texture),
+      this.#groundHeightmap.readback(gpu.device, this.#tex.groundHeightmap.texture),
     ])
     this.#grassTileWorker.setHeightmap(this.#groundHeightmap.data, 512, 80)
 
     this.#flowerField = new FlowerField((x, z) => this.#sampleGround(x, z))
     this.#flowerField.update(ctx.cameraPosition[0], ctx.cameraPosition[2])
-    gpu.queue.writeBuffer(this.#flowerBuffers.instances, 0, this.#flowerField.data)
+    gpu.queue.writeBuffer(this.#geo.flower.instances, 0, this.#flowerField.data)
 
     this.#textModelMatrix = this.#computeTextModelMatrix()
-    if (this.#textModelMatrix) gpu.queue.writeBuffer(this.#textObjectUniformBuffer, 0, this.#textModelMatrix)
-
-    textBuffersPromise
-      .then(buffers => {
-        this.#textBuffers = buffers
+    textPromise
+      .then(mesh => {
+        if (!mesh) return
+        mesh.modelMatrix = this.#textModelMatrix
+        this.#geo.text = mesh
+        this.#uniforms.textObject.set(mesh.modelMatrix).write()
       })
       .catch(error => reportError("text-load", error))
-    bikeBuffersPromise
-      .then(buffers => {
-        this.#bikeBuffers = buffers
-        this.#bikeModelMatrix = this.#computeBikeModelMatrix()
-        if (this.#bikeModelMatrix) gpu.queue.writeBuffer(this.#bikeObjectUniformBuffer, 0, this.#bikeModelMatrix)
-        this.#bikeLights = this.#computeBikeLights()
+    bikePromise
+      .then(mesh => {
+        if (!mesh) return
+        this.#geo.bike = mesh
+        mesh.modelMatrix = this.#computeBikeModelMatrix()
+        if (!mesh.modelMatrix) return
+        this.#uniforms.bikeObject.set(mesh.modelMatrix).write()
+        this.#bikeLights = this.#computeBikeLights(mesh.modelMatrix)
       })
       .catch(error => reportError("bike-load", error))
 
-    this.#renderTargets = createRenderTargets(gpu, ctx.width, ctx.height)
     this.effectsSystem = new EffectsSystem()
-    this.#rainBuffers = initRainBuffers(gpu, this.effectsSystem)
-    this.#particleBuffers = initParticleBuffers(gpu, this.effectsSystem)
-    this.#fireflyBuffers = initFireflyBuffers(gpu, this.effectsSystem)
-    this.#flyBuffers = initFlyBuffers(gpu, this.effectsSystem)
-    this.#beeBuffers = initBeeBuffers(gpu, this.effectsSystem)
+    this.#geo.rain = initRainBuffers(gpu, this.effectsSystem)
+    this.#geo.particle = initParticleBuffers(gpu, this.effectsSystem)
+    this.#geo.firefly = initFireflyBuffers(gpu, this.effectsSystem)
+    this.#geo.fly = initFlyBuffers(gpu, this.effectsSystem)
+    this.#geo.bee = initBeeBuffers(gpu, this.effectsSystem)
 
-    // Bind groups that don't depend on screen-size resources
-    this.#particleBg = gpu.device.createBindGroup({
-      layout: passLayouts.particle,
-      entries: [{ binding: 0, resource: { buffer: this.#particleUniformBuffer } }],
-    })
-    this.#fireflySpriteBg = gpu.device.createBindGroup({
-      layout: passLayouts.fireflySprite,
-      entries: [{ binding: 0, resource: { buffer: this.#fireflySpriteUniformBuffer } }],
-    })
-    this.#flyBg = gpu.device.createBindGroup({
-      layout: passLayouts.insect,
-      entries: [{ binding: 0, resource: { buffer: this.#flyUniformBuffer } }],
-    })
-    this.#beeBg = gpu.device.createBindGroup({
-      layout: passLayouts.insect,
-      entries: [{ binding: 0, resource: { buffer: this.#beeUniformBuffer } }],
-    })
-
-    this.#rebuildPassBindGroups()
+    this.#renderTargets = createRenderTargets(gpu, ctx.width, ctx.height)
+    this.#createScreenBindGroups()
     this.#clearPostProcessTargets()
 
-    const renderAPI = {
+    this.#eventModules = await loadActiveModules(gpu, {
       device: gpu.device,
-      frameBindGroupLayout: frameLayout,
-      objectBindGroupLayout: objectLayout,
-      emptyBindGroupLayout: emptyLayout,
+      frameBindGroupLayout: layouts.frame,
+      objectBindGroupLayout: layouts.object,
+      emptyBindGroupLayout: layouts.empty,
       gBufferFormats: ["rgba8unorm", "rgba8unorm", "rgba8unorm"],
       depthFormat: "depth24plus",
       shadowDepthFormat: "depth32float",
-    }
-    this.#eventModules = await loadActiveModules(gpu, renderAPI)
+    })
 
     this.cameraAnimator = new CameraAnimator(
       this.camera,
-      () => this.#grassTileWorker.dispatch(this.#grassBuffers, ctx.cameraPosition),
+      () => this.#grassTileWorker.dispatch(this.#geo.grass, ctx.cameraPosition),
       (x, z) => this.#sampleGround(x, z),
       this.timeSystem
     )
@@ -661,192 +470,145 @@ export class Renderer {
     this.#render()
   }
 
-  // Rebuild all bind groups that reference screen-size render targets. Called at
-  // init and after every resize (render target textures are recreated).
-  #rebuildPassBindGroups() {
+  #createUniforms() {
+    const gpu = this.#gpu
+    for (const [name, byteSize] of Object.entries(UNIFORM_BYTES)) {
+      const uniforms = new UniformBuffer(gpu, name, byteSize)
+      const seed = UNIFORM_SEED[name]
+      if (seed) uniforms.set(seed).write()
+      this.#uniforms[name] = uniforms
+    }
+    // Bloom mips each need their own half-texel size, so they get one buffer per level.
+    const mipUniforms = () => Array.from({ length: BLOOM_LEVELS }, (unused, i) => new UniformBuffer(gpu, `bloom${i}`, BLOOM_MIP_UNIFORM_BYTES)) // prettier-ignore
+    this.#uniforms.bloomDown = mipUniforms()
+    this.#uniforms.bloomUp = mipUniforms()
+  }
+
+  // Binds a named bind group, defaulting to the pass layout of the same name.
+  // Resources are listed in binding order.
+  #binder() {
+    return (name, resources, layout = name) =>
+      (this.#bg[name] = createBindGroup(this.#gpu.device, this.#layouts[layout], name, resources))
+  }
+
+  #uniform(name) {
+    return { buffer: this.#uniforms[name].buffer }
+  }
+
+  // Bind groups that only reference resources living for the whole session.
+  #createStaticBindGroups() {
+    const gpu = this.#gpu
+    const uniform = name => this.#uniform(name)
+    const bind = this.#binder()
+
+    bind("empty", [])
+    bind("frame", [uniform("frame")])
+    bind("textObject", [uniform("textObject")], "object")
+    bind("bikeObject", [uniform("bikeObject")], "object")
+    bind("cloudShadowBake", [uniform("cloudShadow")])
+    for (const name of ["grass", "flower", "shadow"]) {
+      bind(name, [uniform(name), this.#tex.windNoise.view, gpu.linearRepeat])
+    }
+    bind("ground", [this.#tex.groundHeightmap.view, gpu.linearClamp])
+    bind("sky", [uniform("sky"), this.#tex.mountainHeightmap.view, gpu.linearClamp, this.#tex.noise.view, gpu.linearRepeat]) // prettier-ignore
+    for (const name of ["bird", "rain", "particle", "fireflySprite"]) bind(name, [uniform(name)])
+    bind("fly", [uniform("fly")], "insect")
+    bind("bee", [uniform("bee")], "insect")
+  }
+
+  // Bind groups that reference screen-size render targets — rebuilt on resize.
+  #createScreenBindGroups() {
     const gpu = this.#gpu
     const ctx = this.#ctx
     const rt = this.#renderTargets
     if (!rt || !ctx.depthView) return
 
-    const device = gpu.device
-    const lay = this.#passLayouts
-    const lin = gpu.linearClamp
-    const near = gpu.nearestClamp
+    const uniform = name => this.#uniform(name)
+    const bind = this.#binder()
+    const linear = gpu.linearClamp
+    const nearest = gpu.nearestClamp
+    const gBuffer = [rt.gAlbedo.view, nearest, rt.gNormal.view, nearest, rt.gDepth.view, nearest]
 
-    this.#rtViews = {
-      gAlbedo: rt.gAlbedo.createView(),
-      gNormal: rt.gNormal.createView(),
-      gDepth: rt.gDepth.createView(),
-      sceneTexture: rt.sceneTexture.createView(),
-    }
-    for (const t of [
-      rt.ssao,
-      rt.ssaoPrev,
-      rt.ssaoBlur,
-      rt.bloomExtract,
-      rt.godRay,
-      rt.dofDown,
-      rt.dofBlur,
-      ...rt.bloomMips,
-    ]) {
-      if (t) t.view = t.texture.createView()
-    }
-    this.#bloomUpTargets = [...rt.bloomMips.slice(0, BLOOM_LEVELS - 1).reverse(), rt.bloomExtract]
+    bind("deferredLighting", [
+      uniform("deferredLighting"),
+      rt.gAlbedo.view,
+      rt.gNormal.view,
+      rt.gDepth.view,
+      this.#tex.shadowMap.view,
+      this.#tex.cloudShadow.view,
+      gpu.depthSampler,
+    ])
+    bind("fireflyLights", [uniform("fireflyLights"), ...gBuffer])
+    bind("bikeLights", [uniform("bikeLights"), ...gBuffer])
 
-    this.#passBindGroups = createPassBindGroups(
-      device,
-      {
-        grass: lay.grass,
-        flower: lay.flower,
-        shadow: lay.shadow,
-        ground: lay.ground,
-        bird: lay.bird,
-        deferredLighting: lay.deferredLighting,
-        fireflyLights: lay.fireflyLights,
-        bikeLights: lay.bikeLights,
-        sky: lay.sky,
-        rain: lay.rain,
-      },
-      {
-        windNoise: this.#windNoiseTexture,
-        groundHeightmap: this.#groundHeightmapTexture,
-        mountainHeightmap: this.#mountainHeightmapTexture,
-        noiseTex: this.#noiseTexture,
-        gAlbedo: rt.gAlbedo,
-        gNormal: rt.gNormal,
-        gDepth: rt.gDepth,
-        shadowMap: this.#shadowMapTexture,
-        cloudShadow: this.#cloudShadowTexture,
-      },
-      {
-        depthView: ctx.depthView,
-        depthSampleView: ctx.depthSampleView,
-        shadowMapView: this.#shadowMapView,
-        cloudShadowView: this.#cloudShadowTextureView,
-      },
-      { linearClamp: lin, linearRepeat: gpu.linearRepeat, nearestClamp: near, depthSampler: gpu.depthSampler },
-      {
-        grass: this.#grassUniformBuffer,
-        flower: this.#flowerUniformBuffer,
-        shadow: this.#shadowUniformBuffer,
-        bird: this.#birdUniformBuffer,
-        deferredLighting: this.#deferredLightingBuffer,
-        fireflyLights: this.#fireflyUniformBuffer,
-        bikeLights: this.#bikeLightsUniformBuffer,
-        sky: this.#skyUniformBuffer,
-        rain: this.#rainUniformBuffer,
-      }
+    // SSAO ping-pong: index 0 reads ssaoPrev → writes ssao; index 1 the reverse.
+    this.#bg.ssao = [rt.ssaoPrev, rt.ssao].map(history =>
+      createBindGroup(gpu.device, this.#layouts.ssao, "ssao", [
+        uniform("ssao"),
+        ctx.depthView,
+        nearest,
+        rt.gAlbedo.view,
+        nearest,
+        history.view,
+        linear,
+      ])
     )
-
-    // SSAO ping-pong: idx 0 reads ssaoPrev→writes ssao; idx 1 reads ssao→writes ssaoPrev.
-    const ssaoEntries = prev => [
-      { binding: 0, resource: { buffer: this.#ssaoUniformBuffer } },
-      { binding: 1, resource: ctx.depthView },
-      { binding: 2, resource: near },
-      { binding: 3, resource: this.#rtViews.gAlbedo },
-      { binding: 4, resource: near },
-      { binding: 5, resource: prev.view },
-      { binding: 6, resource: lin },
-    ]
-    const ssaoBlurEntries = src => [
-      { binding: 0, resource: src.view },
-      { binding: 1, resource: lin },
-      { binding: 2, resource: ctx.depthView },
-    ]
-    this.#ssaoBgs = [
-      device.createBindGroup({ layout: lay.ssao, entries: ssaoEntries(rt.ssaoPrev) }),
-      device.createBindGroup({ layout: lay.ssao, entries: ssaoEntries(rt.ssao) }),
-    ]
-    this.#ssaoBlurBgs = rt.ssaoBlur
-      ? [
-          device.createBindGroup({ layout: lay.ssaoBlur, entries: ssaoBlurEntries(rt.ssao) }),
-          device.createBindGroup({ layout: lay.ssaoBlur, entries: ssaoBlurEntries(rt.ssaoPrev) }),
-        ]
+    this.#bg.ssaoBlur = rt.ssaoBlur
+      ? [rt.ssao, rt.ssaoPrev].map(source =>
+          createBindGroup(gpu.device, this.#layouts.ssaoBlur, "ssao blur", [source.view, linear, ctx.depthView])
+        )
       : null
 
-    // Bloom: extract threshold is fixed; halfTexel uniforms depend on source mip size.
-    gpu.queue.writeBuffer(this.#bloomExtractUniformBuffer, 0, new Float32Array([0.8, 0, 0, 0, 0, 0, 0, 0]))
-    const bloomBg = (layout, uniformBuf, srcView) =>
-      device.createBindGroup({
-        layout,
-        entries: [
-          { binding: 0, resource: { buffer: uniformBuf } },
-          { binding: 1, resource: lin },
-          { binding: 2, resource: srcView },
-        ],
-      })
-    const writeHalfTexel = (buf, w, h) => gpu.queue.writeBuffer(buf, 0, new Float32Array([0.5 / w, 0.5 / h, 0, 0]))
-
-    this.#bloomExtractBg = bloomBg(lay.bloomExtract, this.#bloomExtractUniformBuffer, this.#rtViews.sceneTexture)
+    // Bloom: extract from the scene, downsample the mip chain, then additively
+    // upsample back through it. Each step's half-texel depends on its source mip.
+    const bloomStep = (layout, uniforms, source) => {
+      uniforms.f[0] = 0.5 / source.width
+      uniforms.f[1] = 0.5 / source.height
+      uniforms.write()
+      return createBindGroup(gpu.device, layout, "bloom", [{ buffer: uniforms.buffer }, linear, source.view])
+    }
+    bind("bloomExtract", [uniform("bloomExtract"), linear, rt.sceneTexture.view])
     const downSources = [rt.bloomExtract, ...rt.bloomMips.slice(0, BLOOM_LEVELS - 1)]
-    this.#bloomDownBgs = downSources.map((src, i) => {
-      writeHalfTexel(this.#bloomDownUniformBuffers[i], src.width, src.height)
-      return bloomBg(lay.bloomDown, this.#bloomDownUniformBuffers[i], src.view)
-    })
     const upSources = rt.bloomMips.slice(0, BLOOM_LEVELS).reverse()
-    this.#bloomUpBgs = upSources.map((src, i) => {
-      writeHalfTexel(this.#bloomUpUniformBuffers[i], src.width, src.height)
-      return bloomBg(lay.bloomUp, this.#bloomUpUniformBuffers[i], src.view)
-    })
+    this.#bg.bloomDown = downSources.map((src, i) => bloomStep(this.#layouts.bloomDown, this.#uniforms.bloomDown[i], src)) // prettier-ignore
+    this.#bg.bloomUp = upSources.map((src, i) => bloomStep(this.#layouts.bloomUp, this.#uniforms.bloomUp[i], src))
+    this.#bloomUpTargets = [...rt.bloomMips.slice(0, BLOOM_LEVELS - 1).reverse(), rt.bloomExtract]
 
-    this.#godRayBg = device.createBindGroup({
-      layout: lay.godrays,
-      entries: [
-        { binding: 0, resource: { buffer: this.#godRayUniformBuffer } },
-        { binding: 1, resource: this.#rtViews.sceneTexture },
-        { binding: 2, resource: ctx.depthView },
-        { binding: 3, resource: this.#shadowMapView },
-        { binding: 4, resource: this.#cloudShadowTextureView },
-        { binding: 5, resource: lin },
-        { binding: 6, resource: gpu.depthSampler },
-      ],
-    })
+    bind("godrays", [
+      uniform("godRay"),
+      rt.sceneTexture.view,
+      ctx.depthView,
+      this.#tex.shadowMap.view,
+      this.#tex.cloudShadow.view,
+      linear,
+      gpu.depthSampler,
+    ])
 
-    // DoF: coc pass reads full-res scene + depth → dofDown; blur pass reads
-    // dofDown → dofBlur. Both bind the shared dof uniform.
-    this.#dofCocBg = device.createBindGroup({
-      layout: lay.dofCoc,
-      entries: [
-        { binding: 0, resource: { buffer: this.#dofUniformBuffer } },
-        { binding: 1, resource: this.#rtViews.sceneTexture },
-        { binding: 2, resource: ctx.depthSampleView },
-        { binding: 3, resource: (S.lowSpec ? rt.ssao : rt.ssaoBlur).view },
-        { binding: 4, resource: lin },
-        { binding: 5, resource: this.#rtViews.gAlbedo },
-      ],
-    })
-    this.#dofBlurBg = device.createBindGroup({
-      layout: lay.dofBlur,
-      entries: [
-        { binding: 0, resource: { buffer: this.#dofUniformBuffer } },
-        { binding: 1, resource: rt.dofDown.view },
-        { binding: 2, resource: lin },
-      ],
-    })
+    // DoF: the CoC pass reads the full-res scene + depth into dofDown, the blur
+    // pass gathers dofDown into dofBlur. Both bind the shared dof uniform.
+    const ao = S.lowSpec ? rt.ssao : rt.ssaoBlur
+    bind("dofCoc", [uniform("dof"), rt.sceneTexture.view, ctx.depthSampleView, ao.view, linear, rt.gAlbedo.view])
+    bind("dofBlur", [uniform("dof"), rt.dofDown.view, linear])
 
-    this.#postprocessBg = device.createBindGroup({
-      layout: lay.postprocess,
-      entries: [
-        { binding: 0, resource: { buffer: this.#postprocessUniformBuffer } },
-        { binding: 1, resource: this.#rtViews.sceneTexture },
-        { binding: 2, resource: lin },
-        { binding: 3, resource: ctx.depthView },
-        { binding: 4, resource: near },
-        { binding: 5, resource: rt.bloomExtract.view },
-        { binding: 6, resource: lin },
-        { binding: 7, resource: rt.godRay.view },
-        { binding: 8, resource: lin },
-        { binding: 9, resource: (S.lowSpec ? rt.ssao : rt.ssaoBlur).view },
-        { binding: 10, resource: lin },
-        { binding: 11, resource: this.#rtViews.gAlbedo },
-        { binding: 12, resource: near },
-        { binding: 13, resource: { buffer: this.#fogUniformBuffer } },
-        { binding: 14, resource: this.#noiseTexture.createView() },
-        { binding: 15, resource: gpu.linearRepeat },
-        { binding: 16, resource: rt.dofBlur.view },
-      ],
-    })
+    bind("postprocess", [
+      uniform("postprocess"),
+      rt.sceneTexture.view,
+      linear,
+      ctx.depthView,
+      nearest,
+      rt.bloomExtract.view,
+      linear,
+      rt.godRay.view,
+      linear,
+      ao.view,
+      linear,
+      rt.gAlbedo.view,
+      nearest,
+      uniform("fog"),
+      this.#tex.noise.view,
+      gpu.linearRepeat,
+      rt.dofBlur.view,
+    ])
   }
 
   #resize() {
@@ -873,13 +635,9 @@ export class Renderer {
     ctx.depthSampleView = ctx.depthTexture.createView({ label: "depth sample view", aspect: "depth-only" })
 
     if (this.#renderTargets) {
-      const rt = this.#renderTargets
-      for (const k of ["gAlbedo", "gNormal", "gDepth", "sceneTexture"]) rt[k]?.destroy()
-      for (const k of ["ssao", "ssaoPrev", "ssaoBlur", "bloomExtract", "godRay", "dofDown", "dofBlur"])
-        rt[k]?.texture?.destroy()
-      for (const m of rt.bloomMips) m.texture.destroy()
+      destroyRenderTargets(this.#renderTargets)
       this.#renderTargets = createRenderTargets(this.#gpu, width, height)
-      this.#rebuildPassBindGroups()
+      this.#createScreenBindGroups()
       this.#clearPostProcessTargets()
     }
   }
@@ -890,17 +648,23 @@ export class Renderer {
   #clearPostProcessTargets() {
     const rt = this.#renderTargets
     if (!rt) return
-    const enc = this.#ctx.device.createCommandEncoder()
-    clearRT(enc, rt.ssao.view, CLEAR_WHITE)
-    clearRT(enc, rt.ssaoPrev.view, CLEAR_WHITE)
-    if (rt.ssaoBlur) clearRT(enc, rt.ssaoBlur.view, CLEAR_WHITE)
-    clearRT(enc, rt.bloomExtract.view, CLEAR_BLACK)
-    clearRT(enc, rt.godRay.view, CLEAR_BLACK)
+    const encoder = this.#ctx.device.createCommandEncoder()
+    const clear = (target, clearValue) => {
+      if (target) encoder.beginRenderPass({ colorAttachments: [colorAttachment(target.view, clearValue)] }).end()
+    }
+    clear(rt.ssao, CLEAR_WHITE)
+    clear(rt.ssaoPrev, CLEAR_WHITE)
+    clear(rt.ssaoBlur, CLEAR_WHITE)
+    clear(rt.bloomExtract, CLEAR_BLACK)
+    clear(rt.godRay, CLEAR_BLACK)
     // a=0 so a stale DoF read composites as fully-sharp before the first write.
-    clearRT(enc, rt.dofBlur.view, CLEAR_TRANSPARENT)
-    this.#ctx.device.queue.submit([enc.finish()])
+    clear(rt.dofBlur, CLEAR_TRANSPARENT)
+    this.#ctx.device.queue.submit([encoder.finish()])
     this.#ssaoFrame = 0
   }
+
+  // Scene transforms
+  // ################
 
   // Static text transform: scale 4×, rotX −90°, rotY 198°, translate (0, 0.6, 10).
   #computeTextModelMatrix() {
@@ -927,16 +691,16 @@ export class Renderer {
   }
 
   #computeBikeModelMatrix() {
-    if (!this.#bikeBuffers || !this.#textModelMatrix) return null
+    if (!this.#geo.bike || !this.#textModelMatrix) return null
     const BIKE_HEIGHT_WU = 2.0
     const BIKE_LEAN_RAD = 0.16
     const BIKE_YAW_RAD = -0.4 * Math.PI
     const TEXT_X = 5.0 - 3.5
     const TEXT_Z = 0
 
-    const { min, max } = this.#bikeBuffers.bbox
+    const { min, max } = this.#geo.bike.bbox
     const cx = (min[0] + max[0]) * 0.5 - 1.0
-    const cz = (min[2] + max[2]) * 0.5 // - 14.2
+    const cz = (min[2] + max[2]) * 0.5
     const s = BIKE_HEIGHT_WU / (max[1] - min[1])
 
     const anchor = this.#textLocalToWorld(TEXT_X, 0, TEXT_Z)
@@ -952,22 +716,19 @@ export class Renderer {
     const yaw = [cyw, 0, syw, 0, 0, 1, 0, 0, -syw, 0, cyw, 0, 0, 0, 0, 1] // about +Y
     const place = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, anchor[0], groundY, anchor[2], 1]
 
-    const local = multiplyMM(scale, centre)
-    const oriented = multiplyMM(yaw, multiplyMM(lean, local))
+    const oriented = multiplyMM(yaw, multiplyMM(lean, multiplyMM(scale, centre)))
     return new Float32Array(multiplyMM(place, oriented))
   }
 
-  #computeBikeLights() {
-    if (!this.#bikeModelMatrix) return []
-    const M = this.#bikeModelMatrix
+  #computeBikeLights(modelMatrix) {
     const OMNI = 2.0
-    const deg = d => Math.cos((d * Math.PI) / 180)
+    const coneCos = deg => Math.cos((deg * Math.PI) / 180)
     const LAMPS = [
       {
         local: [0.1155, 0.714, -0.8935],
         dirLocal: [0.0, -0.42, -1.0],
         color: [0.833, 0.833, 1.0],
-        cone: deg(32),
+        cone: coneCos(32),
         reachScale: 2.75,
         intensity: 5.5,
       },
@@ -980,17 +741,20 @@ export class Renderer {
         intensity: 1.0,
       },
     ]
-    return LAMPS.map(({ local, dirLocal, color, cone, reachScale, intensity }) => {
-      const w = multiplyMV(M, [...local, 1])
+    return LAMPS.map(({ local, dirLocal, ...lamp }) => {
+      const world = multiplyMV(modelMatrix, [...local, 1])
       let dir = [0, 0, 0]
       if (dirLocal) {
-        const d = multiplyMV(M, [...dirLocal, 0]) // rotate the beam axis into world space (w=0)
+        const d = multiplyMV(modelMatrix, [...dirLocal, 0]) // rotate the beam axis into world space (w=0)
         const len = Math.hypot(d[0], d[1], d[2]) || 1
         dir = [d[0] / len, d[1] / len, d[2] / len]
       }
-      return { pos: [w[0], w[1], w[2]], color, dir, cone, reachScale, intensity }
+      return { ...lamp, pos: [world[0], world[1], world[2]], dir }
     })
   }
+
+  // Per-frame CPU updates
+  // #####################
 
   // Orthographic frustum fitted to the camera's near-side frustum corners
   // projected into light space, texel-snapped to prevent shadow shimmer.
@@ -1130,9 +894,8 @@ export class Renderer {
     ctx.cursorActive = 0
   }
 
-  // Grass fields re-tile when the camera crosses a tile boundary. The dense and
-  // sparse anchor offsets are derived from baseX/baseZ by fixed constants, so
-  // tracking just the base tile coordinate is sufficient.
+  // Grass fields re-tile when the camera crosses a tile boundary. Both layers'
+  // anchors derive from the base tile coordinate, so tracking it is enough.
   #updateGrassTileAnchors(ctx) {
     const cp = ctx.cameraPosition
     const baseX = Math.floor(cp[0] / TILE_SIZE)
@@ -1140,72 +903,72 @@ export class Renderer {
     if (baseX === this.#tileBaseX && baseZ === this.#tileBaseZ) return
     this.#tileBaseX = baseX
     this.#tileBaseZ = baseZ
-    this.#grassTileWorker.dispatch(this.#grassBuffers, cp)
+    this.#grassTileWorker.dispatch(this.#geo.grass, cp)
   }
 
-  // Uniform writers — each submits one host-side buffer to its GPU uniform
-  // #############################################################################
+  // Uniform writers — each fills its staging buffer and submits it
+  // #############################################################
 
-  #writeGrassUniforms(ctx, timeInfo) {
-    const d = this.#grassData
-    d[0] = timeInfo.grassHeightFactor ?? 1.0
-    d[1] = timeInfo.grassWidthFactor ?? 1.0
-    d[3] = timeInfo.dewAmount ?? 0.0
-    ctx.queue.writeBuffer(this.#grassUniformBuffer, 0, d)
+  #writeGrassUniforms(timeInfo) {
+    const { f } = this.#uniforms.grass
+    f[0] = timeInfo.grassHeightFactor ?? 1.0
+    f[1] = timeInfo.grassWidthFactor ?? 1.0
+    f[3] = timeInfo.dewAmount ?? 0.0
+    this.#uniforms.grass.write()
   }
 
-  #writeFlowerUniforms(ctx, timeInfo) {
-    const d = this.#flowerData
-    d[0] = timeInfo.flowerSway ?? 0.6
-    d[1] = timeInfo.flowerAlpha ?? 0.5
-    d[2] = timeInfo.grassHeightFactor ?? 1.0
-    ctx.queue.writeBuffer(this.#flowerUniformBuffer, 0, d)
+  #writeFlowerUniforms(timeInfo) {
+    const { f } = this.#uniforms.flower
+    f[0] = timeInfo.flowerSway ?? 0.6
+    f[1] = timeInfo.flowerAlpha ?? 0.5
+    f[2] = timeInfo.grassHeightFactor ?? 1.0
+    this.#uniforms.flower.write()
   }
 
-  #writeBirdUniforms(ctx, timeInfo) {
-    const d = this.#birdData
-    d[3] = timeInfo.birdWingAmplitude ?? 0.41
-    d[4] = timeInfo.birdWingBeat ?? 0.09
-    d[5] = timeInfo.birdScale ?? 0.6
-    ctx.queue.writeBuffer(this.#birdUniformBuffer, 0, d)
+  #writeBirdUniforms(timeInfo) {
+    const { f } = this.#uniforms.bird
+    f[3] = timeInfo.birdWingAmplitude ?? 0.41
+    f[4] = timeInfo.birdWingBeat ?? 0.09
+    f[5] = timeInfo.birdScale ?? 0.6
+    this.#uniforms.bird.write()
   }
 
   #writeDeferredLightingUniforms(ctx, timeInfo) {
     const sunElev = Math.max(0, Math.min(1, timeInfo.sunPosition.y / 0.1))
     const moonElev = Math.max(0, Math.min(1, timeInfo.moonPosition.y / 0.15)) * (1 - sunElev)
     const sky = ctx.skyColor
-    const d = this.#deferredLightingData
-    d[0] = sky.r
-    d[1] = sky.g
-    d[2] = sky.b
-    d[3] = timeInfo.ambientIntensity
-    d[4] = timeInfo.colorTemperature
-    d[5] = ctx.lightSpaceMatrix ? 1 : 0
-    d[6] = ctx.mountainVisibility
-    d[7] = moonElev
-    d[8] = timeInfo.sparkleEnabled ?? 1
-    d[9] = timeInfo.sparkleIntensity ?? 1
-    d[10] = timeInfo.sparkleDensity ?? 8
-    d[11] = timeInfo.sparkleSharpness ?? 2
-    d[12] = timeInfo.sparkleSpeed ?? 1
-    d[13] = ctx.cloudLightOcclusion
-    d[14] = this.controlsUI?.debugMode ?? this.#debugMode
-    d[15] = timeInfo.emissiveIntensity ?? 2.5
-    ctx.queue.writeBuffer(this.#deferredLightingBuffer, 0, d)
+    const { f } = this.#uniforms.deferredLighting
+    f[0] = sky.r
+    f[1] = sky.g
+    f[2] = sky.b
+    f[3] = timeInfo.ambientIntensity
+    f[4] = timeInfo.colorTemperature
+    f[5] = ctx.lightSpaceMatrix ? 1 : 0
+    f[6] = ctx.mountainVisibility
+    f[7] = moonElev
+    f[8] = timeInfo.sparkleEnabled ?? 1
+    f[9] = timeInfo.sparkleIntensity ?? 1
+    f[10] = timeInfo.sparkleDensity ?? 8
+    f[11] = timeInfo.sparkleSharpness ?? 2
+    f[12] = timeInfo.sparkleSpeed ?? 1
+    f[13] = ctx.cloudLightOcclusion
+    f[14] = this.controlsUI?.debugMode ?? this.#debugMode
+    f[15] = timeInfo.emissiveIntensity ?? 2.5
+    this.#uniforms.deferredLighting.write()
   }
 
   // Pack 32 × vec4f (xyz + brightness·factor) into `f` starting at floatBase.
   #packFireflyArray(f, floatBase, factor) {
     const eff = this.effectsSystem
     const pos = eff?.fireflyPositions
-    const br = eff?.fireflyBrightness
+    const brightness = eff?.fireflyBrightness
     for (let i = 0; i < FIREFLY_SLOTS; i++) {
       const o = floatBase + i * 4
       const p = i * 3
       f[o] = pos ? pos[p] : 0
       f[o + 1] = pos ? pos[p + 1] : 0
       f[o + 2] = pos ? pos[p + 2] : 0
-      f[o + 3] = br ? br[i] * factor : 0
+      f[o + 3] = brightness ? brightness[i] * factor : 0
     }
   }
 
@@ -1213,43 +976,44 @@ export class Renderer {
     const eff = this.effectsSystem
     if (!eff) return
     const factor = ctx.fireflyFactor
-    const { f, dv, buf } = this.#fireflyLights
+    const uniforms = this.#uniforms.fireflyLights
+    const { f, dv } = uniforms
     dv.setUint32(0, factor > 0 ? (eff.fireflyCount ?? 0) : 0, true)
     f[1] = factor
     f[2] = timeInfo.fireflyLightRadius
     f[3] = 0
     this.#packFireflyArray(f, 4, factor)
-    ctx.queue.writeBuffer(this.#fireflyUniformBuffer, 0, buf)
+    uniforms.write()
   }
 
-  #writeBikeLightUniforms(ctx, timeInfo) {
-    const { f, dv, buf } = this.#bikeLightStage
+  #writeBikeLightUniforms(timeInfo) {
+    const uniforms = this.#uniforms.bikeLights
+    const { f, dv } = uniforms
     const master = timeInfo.bikeLightCast ?? 1.0
     const radius = timeInfo.bikeLightCastRadius ?? 4.0
-    const count = master > 0 ? this.#bikeLights.length : 0
-    dv.setUint32(0, count, true)
-    f[1] = master // master multiplier; reach/colour intensity are per-lamp
+    dv.setUint32(0, master > 0 ? this.#bikeLights.length : 0, true)
+    f[1] = master // master multiplier; reach and colour intensity are per-lamp
     f[2] = 0
     f[3] = 0
     for (let i = 0; i < this.#bikeLights.length; i++) {
-      const { pos, color, dir, cone, reachScale, intensity: lampI } = this.#bikeLights[i]
+      const { pos, color, dir, cone, reachScale, intensity } = this.#bikeLights[i]
       const p = 4 + i * 4
       f[p] = pos[0]
       f[p + 1] = pos[1]
       f[p + 2] = pos[2]
-      f[p + 3] = radius * reachScale // per-lamp reach
+      f[p + 3] = radius * reachScale
       const c = 12 + i * 4
       f[c] = color[0]
       f[c + 1] = color[1]
       f[c + 2] = color[2]
-      f[c + 3] = lampI // per-lamp intensity
+      f[c + 3] = intensity
       const d = 20 + i * 4
       f[d] = dir[0]
       f[d + 1] = dir[1]
       f[d + 2] = dir[2]
       f[d + 3] = cone // cos(cone half-angle); > 1 = omnidirectional
     }
-    ctx.queue.writeBuffer(this.#bikeLightsUniformBuffer, 0, buf)
+    uniforms.write()
   }
 
   #writeSkyUniforms(ctx, timeInfo) {
@@ -1257,7 +1021,8 @@ export class Renderer {
     const dim = 1 - rain * 0.25
     const { r: zr, g: zg, b: zb } = timeInfo.zenithColor
     const { r: hr, g: hg, b: hb } = timeInfo.horizonColor
-    const { f, dv, buf } = this.#sky
+    const uniforms = this.#uniforms.sky
+    const { f, dv } = uniforms
     f[0] = zr * dim
     f[1] = zg * dim
     f[2] = zb * dim
@@ -1278,32 +1043,32 @@ export class Renderer {
     f[17] = timeInfo.turbidity + rain * 0.5
     f[18] = timeInfo.overcast + rain * 0.5
     // Preetham coefficients at float offset 20 (byte 80)
-    const sunDirY = ctx.sunDirection ? ctx.sunDirection[1] : 0.5
-    preethamPrecomputeInto(f, 20, f[17], sunDirY)
+    preethamPrecomputeInto(f, 20, f[17], ctx.sunDirection ? ctx.sunDirection[1] : 0.5)
     // mountainSteps at byte 164 (float offset 41, after the 21 Preetham floats)
     dv.setUint32(164, Math.round(timeInfo.mountainSteps ?? 64), true)
-    ctx.queue.writeBuffer(this.#skyUniformBuffer, 0, buf)
+    uniforms.write()
   }
 
-  #writeRainUniforms(ctx, timeInfo) {
-    this.#rainData[0] = timeInfo.rain
-    ctx.queue.writeBuffer(this.#rainUniformBuffer, 0, this.#rainData)
+  #writeRainUniforms(timeInfo) {
+    this.#uniforms.rain.f[0] = timeInfo.rain
+    this.#uniforms.rain.write()
   }
 
   #writeGodRayUniforms(ctx, timeInfo) {
-    const { f, dv, buf } = this.#godRay
+    const uniforms = this.#uniforms.godRay
+    const { f, dv } = uniforms
     f[0] = this.#sunScreenRaw[0]
     f[1] = this.#sunScreenRaw[1]
     f[2] = timeInfo.godRayDecay * (ctx.mountainVisibility ?? 1) + timeInfo.rain
     f[3] = timeInfo.sunAboveHorizon ? 1 : 0
     dv.setUint32(16, Math.round(timeInfo.godRaySteps), true)
-    // shadowEnabled — low-spec disables dynamic shadow-map sampling in god rays.
+    // Low-spec disables dynamic shadow-map sampling in god rays.
     f[5] = S.lowSpec ? 0 : 1
-    ctx.queue.writeBuffer(this.#godRayUniformBuffer, 0, buf)
+    uniforms.write()
   }
 
-  #writeDofUniforms(ctx, timeInfo) {
-    const { f, buf } = this.#dof
+  #writeDofUniforms(timeInfo) {
+    const { f } = this.#uniforms.dof
     f[0] = NEAR
     f[1] = FAR
     f[2] = timeInfo.depthOfField
@@ -1312,17 +1077,17 @@ export class Renderer {
     f[5] = timeInfo.dofBlurNear
     f[6] = timeInfo.dofBlurFar
     f[7] = timeInfo.ssaoIntensity
-    ctx.queue.writeBuffer(this.#dofUniformBuffer, 0, buf)
+    this.#uniforms.dof.write()
   }
 
   #writeFogUniforms(ctx, timeInfo) {
     const eff = this.effectsSystem
     const rain = timeInfo.rain
-    const wu = this.windSystem.uniforms
+    const wind = this.windSystem.uniforms
     const factor = ctx.fireflyFactor
-    const fireflyCount = factor > 0 && eff ? (eff.fireflyCount ?? 0) : 0
     const { r: fr, g: fg, b: fb } = timeInfo.fogColor
-    const { f, dv, buf } = this.#fog
+    const uniforms = this.#uniforms.fog
+    const { f, dv } = uniforms
     f[0] = fr
     f[1] = fg
     f[2] = fb
@@ -1331,25 +1096,24 @@ export class Renderer {
     f[5] = timeInfo.fogIntensity + rain * 0.5
     f[6] = timeInfo.fogQuality
     dv.setUint32(28, Math.round(timeInfo.fogSteps), true)
-    f[8] = wu.windDirection[0]
-    f[9] = wu.windDirection[1]
-    f[10] = wu.windStrength
-    dv.setUint32(44, fireflyCount, true)
+    f[8] = wind.windDirection[0]
+    f[9] = wind.windDirection[1]
+    f[10] = wind.windStrength
+    dv.setUint32(44, factor > 0 && eff ? (eff.fireflyCount ?? 0) : 0, true)
     f[12] = factor
     f[13] = timeInfo.fireflyLightRadius
 
     const head = this.#bikeLights[0]
     const beam = (timeInfo.bikeLightBeam ?? 1.0) * (timeInfo.bikeLightCast ?? 1.0)
     if (head && beam > 0) {
-      const reach = (timeInfo.bikeLightCastRadius ?? 4.0) * head.reachScale
       f[144] = head.pos[0]
       f[145] = head.pos[1]
       f[146] = head.pos[2]
-      f[147] = reach
+      f[147] = (timeInfo.bikeLightCastRadius ?? 4.0) * head.reachScale
       f[148] = head.color[0]
       f[149] = head.color[1]
       f[150] = head.color[2]
-      f[151] = beam * 5.0 // base scatter strength; control tunes around it
+      f[151] = beam * 5.0 // base scatter strength; the control tunes around it
       f[152] = head.dir[0]
       f[153] = head.dir[1]
       f[154] = head.dir[2]
@@ -1358,25 +1122,23 @@ export class Renderer {
       f[147] = 0 // reach = 0 disables the beam in the shader
     }
 
+    // The 32 firefly lights sit between the two blocks; skip them when unlit.
     if (factor > 0) {
       this.#packFireflyArray(f, 16, factor)
-      ctx.queue.writeBuffer(this.#fogUniformBuffer, 0, buf)
+      uniforms.write()
     } else {
-      ctx.queue.writeBuffer(this.#fogUniformBuffer, 0, buf, 0, 64)
-      ctx.queue.writeBuffer(this.#fogUniformBuffer, 576, buf, 576, 48)
+      uniforms.write(0, 64)
+      uniforms.write(576, 48)
     }
   }
 
   #writePostProcessUniforms(ctx, timeInfo) {
     const rain = timeInfo.rain
-    const [sx, sy] = this.#sunScreenPos
+    const [sunX, sunY] = this.#sunScreenPos
     const { r: fr, g: fg, b: fb } = timeInfo.fogColor
     const [lr, lg, lb] = timeInfo.cgLift
-    const night = isNight(timeInfo)
-    const skipBloom = !isActive(timeInfo.bloomIntensity) || night
-    const skipGodRays = !isActive(timeInfo.godRayIntensity)
-    const skipSSAO = !isActive(timeInfo.ssaoIntensity)
-    const f = this.#postprocessData
+    const skipBloom = !isActive(timeInfo.bloomIntensity) || isNight(timeInfo)
+    const { f } = this.#uniforms.postprocess
     f[0] = fr
     f[1] = fg
     f[2] = fb
@@ -1385,16 +1147,16 @@ export class Renderer {
     f[5] = lg
     f[6] = lb
     f[7] = S.lowSpec ? 0 : 1
-    f[8] = sx
-    f[9] = sy
+    f[8] = sunX
+    f[9] = sunY
     f[10] = timeInfo.dofFocusNear
     f[11] = timeInfo.dofFocusFar
     f[12] = timeInfo.dofBlurNear
     f[13] = timeInfo.dofBlurFar
     // Zero intensity for skipped passes so post-process doesn't sample stale texels.
     f[14] = skipBloom ? 0 : timeInfo.bloomIntensity
-    f[15] = skipGodRays ? 0 : timeInfo.godRayIntensity + rain * 0.5
-    f[16] = skipSSAO ? 0 : timeInfo.ssaoIntensity
+    f[15] = isActive(timeInfo.godRayIntensity) ? timeInfo.godRayIntensity + rain * 0.5 : 0
+    f[16] = isActive(timeInfo.ssaoIntensity) ? timeInfo.ssaoIntensity : 0
     f[17] = timeInfo.chromaticAberration
     f[18] = timeInfo.cgExposure - rain * 0.25
     f[19] = timeInfo.cgContrast - rain * 0.125
@@ -1418,229 +1180,171 @@ export class Renderer {
       f[c + 1] = color[1]
       f[c + 2] = color[2]
     }
-    ctx.queue.writeBuffer(this.#postprocessUniformBuffer, 0, f)
+    this.#uniforms.postprocess.write()
   }
 
-  // Fullscreen draw into a wrapped render target (.texture, .width, .height, .view).
-  #fullscreenTarget(encoder, target, pipeline, bg0, bg1, clearValue = CLEAR_BLACK, loadOp = "clear", timestampWrites) {
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: target.view, clearValue, loadOp, storeOp: "store" }],
-      timestampWrites,
-    })
-    pass.setViewport(0, 0, target.width, target.height, 0, 1)
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(0, bg0)
-    pass.setBindGroup(1, bg1)
-    pass.draw(3)
-    pass.end()
+  #writeFrameUniforms(ctx, timeInfo) {
+    this.#profiler?.cpuBegin("uniforms")
+    this.#writeGrassUniforms(timeInfo)
+    this.#writeFlowerUniforms(timeInfo)
+    if (this.boidsSystem && this.#geo.bird) this.#writeBirdUniforms(timeInfo)
+    this.#writeDeferredLightingUniforms(ctx, timeInfo)
+    this.#writeBikeLightUniforms(timeInfo)
+    this.#writeFireflyUniforms(ctx, timeInfo)
+    this.#writeSkyUniforms(ctx, timeInfo)
+    this.#writeRainUniforms(timeInfo)
+    this.#writeGodRayUniforms(ctx, timeInfo)
+    this.#writeDofUniforms(timeInfo)
+    this.#writeFogUniforms(ctx, timeInfo)
+    this.#writePostProcessUniforms(ctx, timeInfo)
+    this.#profiler?.cpuEnd("uniforms")
   }
 
-  // Render passes
-  // #############
+  // Draw helpers
+  // ############
 
   // Instance buffers are tile-contiguous, so a run of visible tile slots maps to
   // one ranged drawIndexed via firstInstance. density < 1 draws a prefix of each
   // tile's blades — blades are randomly attributed within a tile, so a per-tile
   // prefix is an unbiased density cut (a per-run prefix would empty trailing tiles).
-  #drawGrassRanges(pass, indexCount, bladeCount, ranges, rangeCount, density = 1) {
+  #drawGrassRanges(pass, indexCount, bladesPerTile, ranges, rangeCount, density) {
     if (density >= 1) {
       for (let r = 0; r < rangeCount; r++) {
-        pass.drawIndexed(indexCount, ranges[r * 2 + 1] * bladeCount, 0, 0, ranges[r * 2] * bladeCount)
+        pass.drawIndexed(indexCount, ranges[r * 2 + 1] * bladesPerTile, 0, 0, ranges[r * 2] * bladesPerTile)
       }
       return
     }
-    const bladesPerTile = Math.max(1, Math.round(bladeCount * density))
+    const bladesDrawn = Math.max(1, Math.round(bladesPerTile * density))
     for (let r = 0; r < rangeCount; r++) {
       const firstSlot = ranges[r * 2]
       const slotRun = ranges[r * 2 + 1]
       for (let t = 0; t < slotRun; t++) {
-        pass.drawIndexed(indexCount, bladesPerTile, 0, 0, (firstSlot + t) * bladeCount)
+        pass.drawIndexed(indexCount, bladesDrawn, 0, 0, (firstSlot + t) * bladesPerTile)
       }
     }
   }
 
+  // Both grass fields, sharing the blade mesh. `withNoise` adds the per-blade
+  // noise stream the G-buffer pass needs; the shadow pass omits it.
+  #drawGrass(pass, culler, withNoise, distantDensity = 1) {
+    const grass = this.#geo.grass
+    pass.setVertexBuffer(0, grass.bladeVertices)
+    pass.setVertexBuffer(1, grass.bladeTexCoords)
+    pass.setIndexBuffer(grass.bladeIndices, "uint16")
+    for (let i = 0; i < grass.layers.length; i++) {
+      const layer = grass.layers[i]
+      pass.setVertexBuffer(2, layer.dynamic)
+      pass.setVertexBuffer(3, layer.attribs)
+      if (withNoise) pass.setVertexBuffer(4, layer.noise)
+      if (!culler) {
+        pass.drawIndexed(grass.bladeIndexCount, layer.bladeCount)
+        continue
+      }
+      // Distant blades are sub-texel in the shadow map — adaptive quality thins
+      // them via shadowGrassDensity without visible shadow change.
+      const density = layer.distant ? distantDensity : 1
+      const count = culler.rangeCounts[i]
+      this.#drawGrassRanges(pass, grass.bladeIndexCount, layer.bladesPerTile, culler.ranges[i], count, density)
+    }
+  }
+
+  #activeCuller(culler) {
+    return this.#grassCullingEnabled ? culler : null
+  }
+
+  #drawIndexed(pass, mesh, instanceCount = 1, streams = mesh.streams) {
+    setStreams(pass, streams)
+    pass.setIndexBuffer(mesh.indices, mesh.indexFormat)
+    pass.drawIndexed(mesh.indexCount, instanceCount)
+  }
+
+  // Text and bike: a model matrix in group 3, with groups 1–2 padded out.
+  #drawObject(pass, pipeline, bindGroup, mesh, streams) {
+    if (!mesh?.modelMatrix) return
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(1, this.#bg.empty)
+    pass.setBindGroup(2, this.#bg.empty)
+    pass.setBindGroup(3, bindGroup)
+    this.#drawIndexed(pass, mesh, 1, streams)
+  }
+
+  #drawInstanced(pass, pipeline, bindGroup, mesh, vertexCount, instanceCount) {
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(1, bindGroup)
+    setStreams(pass, mesh.streams)
+    pass.draw(vertexCount, instanceCount)
+  }
+
+  // Render passes
+  // #############
+
   #renderShadowPass(encoder, ctx) {
-    if (!ctx.lightSpaceMatrix) return
-    const grass = this.#grassBuffers
-    if (!grass) return
+    if (!ctx.lightSpaceMatrix || !this.#geo.grass) return
     const pass = encoder.beginRenderPass({
       colorAttachments: [],
-      depthStencilAttachment: {
-        view: this.#shadowMapView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-      },
+      depthStencilAttachment: clearedDepth(this.#tex.shadowMap.view),
       timestampWrites: this.#profiler?.pass("shadow"),
     })
     pass.setViewport(0, 0, SHADOWMAP_SIZE, SHADOWMAP_SIZE, 0, 1)
     pass.setPipeline(this.#pipelines.shadow)
-    pass.setBindGroup(0, this.#frameBindGroup)
-    pass.setBindGroup(1, this.#shadowPassBindGroup)
-    pass.setVertexBuffer(0, grass.bladeVertices)
-    pass.setVertexBuffer(1, grass.bladeTexCoords)
-    pass.setIndexBuffer(grass.bladeIndices, "uint16")
-    pass.setVertexBuffer(2, grass.denseDynamic)
-    pass.setVertexBuffer(3, grass.denseAttribs)
-    const culler = this.#grassCullingEnabled ? this.#shadowCuller : null
-    if (culler) {
-      this.#drawGrassRanges(pass, grass.bladeIndexCount, BLADES_DENSE, culler.denseRanges, culler.denseRangeCount)
-    } else {
-      pass.drawIndexed(grass.bladeIndexCount, grass.denseGrassCount)
-    }
-    pass.setVertexBuffer(2, grass.sparseDynamic)
-    pass.setVertexBuffer(3, grass.sparseAttribs)
-    if (culler) {
-      // Distant sparse blades are sub-texel in the shadow map — adaptive quality
-      // thins them via shadowGrassDensity without visible shadow change.
-      const density = ctx.timeInfo?.shadowGrassDensity ?? 1
-      this.#drawGrassRanges(
-        pass,
-        grass.bladeIndexCount,
-        BLADES_SPARSE,
-        culler.sparseRanges,
-        culler.sparseRangeCount,
-        density
-      )
-    } else {
-      pass.drawIndexed(grass.bladeIndexCount, grass.grassCount)
-    }
-    if (this.#textBuffers && this.#textModelMatrix) {
-      pass.setPipeline(this.#pipelines.shadowText)
-      pass.setBindGroup(1, this.#emptyBindGroup)
-      pass.setBindGroup(2, this.#emptyBindGroup)
-      pass.setBindGroup(3, this.#textObjectBindGroup)
-      pass.setVertexBuffer(0, this.#textBuffers.positions)
-      pass.setIndexBuffer(this.#textBuffers.indices, this.#textBuffers.indexFormat)
-      pass.drawIndexed(this.#textBuffers.indexCount)
-    }
-    if (this.#bikeBuffers && this.#bikeModelMatrix) {
-      pass.setPipeline(this.#pipelines.shadowText)
-      pass.setBindGroup(1, this.#emptyBindGroup)
-      pass.setBindGroup(2, this.#emptyBindGroup)
-      pass.setBindGroup(3, this.#bikeObjectBindGroup)
-      pass.setVertexBuffer(0, this.#bikeBuffers.positions)
-      pass.setIndexBuffer(this.#bikeBuffers.indices, "uint32")
-      pass.drawIndexed(this.#bikeBuffers.indexCount)
-    }
-    const birds = this.#birdBuffers
-    if (birds && this.#passBindGroups.bird) {
-      pass.setPipeline(this.#pipelines.birdShadow)
-      pass.setBindGroup(1, this.#passBindGroups.bird)
-      pass.setVertexBuffer(0, birds.positions)
-      pass.setVertexBuffer(1, birds.flex)
-      pass.setVertexBuffer(2, birds.instanceBuffer)
-      pass.draw(birds.vertexCount, birds.instanceCount)
-    }
+    pass.setBindGroup(0, this.#bg.frame)
+    pass.setBindGroup(1, this.#bg.shadow)
+    this.#drawGrass(pass, this.#activeCuller(this.#shadowCuller), false, ctx.timeInfo?.shadowGrassDensity ?? 1)
+
+    const shadowText = this.#pipelines.shadowText
+    this.#drawObject(pass, shadowText, this.#bg.textObject, this.#geo.text, this.#geo.text?.shadowStreams)
+    this.#drawObject(pass, shadowText, this.#bg.bikeObject, this.#geo.bike, this.#geo.bike?.shadowStreams)
+
+    const birds = this.#geo.bird
+    if (birds) this.#drawInstanced(pass, this.#pipelines.birdShadow, this.#bg.bird, birds, birds.vertexCount, birds.instanceCount) // prettier-ignore
+
     for (const mod of this.#eventModules) mod.renderShadow(pass, ctx)
     pass.end()
   }
 
   #renderGBufferPass(encoder, ctx) {
     if (!this.#renderTargets) return
-    const rtv = this.#rtViews
-    const mrt = (view, clearValue = CLEAR_TRANSPARENT) => ({ view, clearValue, loadOp: "clear", storeOp: "store" })
+    const rt = this.#renderTargets
     const pass = encoder.beginRenderPass({
       // gDepth clears to the far plane to match the depth attachment: readers
       // test it against 0.9999 to detect background.
-      colorAttachments: [mrt(rtv.gAlbedo), mrt(rtv.gNormal), mrt(rtv.gDepth, CLEAR_FAR_DEPTH)],
-      depthStencilAttachment: {
-        view: ctx.depthView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-      },
+      colorAttachments: [
+        colorAttachment(rt.gAlbedo.view, CLEAR_TRANSPARENT),
+        colorAttachment(rt.gNormal.view, CLEAR_TRANSPARENT),
+        colorAttachment(rt.gDepth.view, CLEAR_FAR_DEPTH),
+      ],
+      depthStencilAttachment: clearedDepth(ctx.depthView),
       timestampWrites: this.#profiler?.pass("gbuffer"),
     })
     pass.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
+    pass.setBindGroup(0, this.#bg.frame)
 
-    const grass = this.#grassBuffers
-    if (grass && this.#passBindGroups.grass) {
+    if (this.#geo.grass) {
       pass.setPipeline(this.#pipelines.grass)
-      pass.setBindGroup(0, this.#frameBindGroup)
-      pass.setBindGroup(1, this.#passBindGroups.grass)
-      pass.setVertexBuffer(0, grass.bladeVertices)
-      pass.setVertexBuffer(1, grass.bladeTexCoords)
-      pass.setIndexBuffer(grass.bladeIndices, "uint16")
-      pass.setVertexBuffer(2, grass.denseDynamic)
-      pass.setVertexBuffer(3, grass.denseAttribs)
-      pass.setVertexBuffer(4, grass.denseNoise)
-      const culler = this.#grassCullingEnabled ? this.#viewCuller : null
-      if (culler) {
-        this.#drawGrassRanges(pass, grass.bladeIndexCount, BLADES_DENSE, culler.denseRanges, culler.denseRangeCount)
-      } else {
-        pass.drawIndexed(grass.bladeIndexCount, grass.denseGrassCount)
-      }
-      pass.setVertexBuffer(2, grass.sparseDynamic)
-      pass.setVertexBuffer(3, grass.sparseAttribs)
-      pass.setVertexBuffer(4, grass.sparseNoise)
-      if (culler) {
-        this.#drawGrassRanges(pass, grass.bladeIndexCount, BLADES_SPARSE, culler.sparseRanges, culler.sparseRangeCount)
-      } else {
-        pass.drawIndexed(grass.bladeIndexCount, grass.grassCount)
-      }
+      pass.setBindGroup(1, this.#bg.grass)
+      this.#drawGrass(pass, this.#activeCuller(this.#viewCuller), true)
     }
 
-    const flowers = this.#flowerBuffers
-    if (flowers && this.#passBindGroups.flower) {
+    const flowers = this.#geo.flower
+    if (flowers) {
       pass.setPipeline(this.#pipelines.flower)
-      pass.setBindGroup(0, this.#frameBindGroup)
-      pass.setBindGroup(1, this.#passBindGroups.flower)
-      pass.setVertexBuffer(0, flowers.vertices)
-      pass.setVertexBuffer(1, flowers.instances)
-      pass.setIndexBuffer(flowers.indices, "uint16")
-      pass.drawIndexed(flowers.indexCount, flowers.instanceCount)
+      pass.setBindGroup(1, this.#bg.flower)
+      this.#drawIndexed(pass, flowers, flowers.instanceCount)
     }
 
-    const ground = this.#groundBuffers
-    if (ground && this.#passBindGroups.ground) {
+    const ground = this.#geo.ground
+    if (ground) {
       pass.setPipeline(this.#pipelines.ground)
-      pass.setBindGroup(0, this.#frameBindGroup)
-      pass.setBindGroup(1, this.#passBindGroups.ground)
-      pass.setVertexBuffer(0, ground.vertices)
-      pass.setVertexBuffer(1, ground.texCoords)
-      pass.setIndexBuffer(ground.indices, "uint32")
-      pass.drawIndexed(ground.indexCount)
+      pass.setBindGroup(1, this.#bg.ground)
+      this.#drawIndexed(pass, ground)
     }
 
-    if (this.#textBuffers && this.#textModelMatrix) {
-      pass.setPipeline(this.#pipelines.text)
-      pass.setBindGroup(0, this.#frameBindGroup)
-      pass.setBindGroup(1, this.#emptyBindGroup)
-      pass.setBindGroup(2, this.#emptyBindGroup)
-      pass.setBindGroup(3, this.#textObjectBindGroup)
-      pass.setVertexBuffer(0, this.#textBuffers.positions)
-      pass.setVertexBuffer(1, this.#textBuffers.normals)
-      pass.setIndexBuffer(this.#textBuffers.indices, this.#textBuffers.indexFormat)
-      pass.drawIndexed(this.#textBuffers.indexCount)
-    }
+    this.#drawObject(pass, this.#pipelines.text, this.#bg.textObject, this.#geo.text)
+    this.#drawObject(pass, this.#pipelines.bike, this.#bg.bikeObject, this.#geo.bike)
 
-    const bike = this.#bikeBuffers
-    if (bike && this.#bikeModelMatrix) {
-      pass.setPipeline(this.#pipelines.bike)
-      pass.setBindGroup(0, this.#frameBindGroup)
-      pass.setBindGroup(1, this.#emptyBindGroup)
-      pass.setBindGroup(2, this.#emptyBindGroup)
-      pass.setBindGroup(3, this.#bikeObjectBindGroup)
-      pass.setVertexBuffer(0, bike.positions)
-      pass.setVertexBuffer(1, bike.normals)
-      pass.setVertexBuffer(2, bike.colors)
-      pass.setVertexBuffer(3, bike.material)
-      pass.setVertexBuffer(4, bike.emissive)
-      pass.setIndexBuffer(bike.indices, "uint32")
-      pass.drawIndexed(bike.indexCount)
-    }
+    const birds = this.#geo.bird
+    if (birds) this.#drawInstanced(pass, this.#pipelines.bird, this.#bg.bird, birds, birds.vertexCount, birds.instanceCount) // prettier-ignore
 
-    const birds = this.#birdBuffers
-    if (birds && this.#passBindGroups.bird) {
-      pass.setPipeline(this.#pipelines.bird)
-      pass.setBindGroup(0, this.#frameBindGroup)
-      pass.setBindGroup(1, this.#passBindGroups.bird)
-      pass.setVertexBuffer(0, birds.positions)
-      pass.setVertexBuffer(1, birds.flex)
-      pass.setVertexBuffer(2, birds.instanceBuffer)
-      pass.draw(birds.vertexCount, birds.instanceCount)
-    }
     for (const mod of this.#eventModules) mod.renderGBuffer(pass, ctx)
     pass.end()
   }
@@ -1654,103 +1358,87 @@ export class Renderer {
   // TBDR GPU is the most expensive thing in the frame after the grass itself.
   #renderScenePass(encoder, ctx, timeInfo) {
     if (!this.#renderTargets) return
-
     const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        { view: this.#rtViews.sceneTexture, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" },
-      ],
+      colorAttachments: [colorAttachment(this.#renderTargets.sceneTexture.view)],
       // SSAO, god rays and DoF all sample depth after this pass, so it must persist.
       depthStencilAttachment: { view: ctx.depthView, depthLoadOp: "load", depthStoreOp: "store" },
       timestampWrites: this.#profiler?.pass("scene"),
     })
     pass.setViewport(0, 0, ctx.width, ctx.height, 0, 1)
-    pass.setBindGroup(0, this.#frameBindGroup)
+    pass.setBindGroup(0, this.#bg.frame)
     this.#drawDeferred(pass, ctx)
     this.#drawForward(pass, ctx, timeInfo)
     pass.end()
   }
 
   #drawDeferred(pass, ctx) {
-    // Deferred lighting (fullscreen, depthCompare: always). Background pixels are
-    // left black for the sky, which draws over them later in this same pass.
-    pass.setPipeline(this.#pipelines.deferredLighting)
-    pass.setBindGroup(1, this.#passBindGroups.deferredLighting)
-    pass.draw(3)
-    // Firefly lights (fullscreen additive). Skip when no fireflies are visible.
+    const fullscreen = (pipeline, bindGroup) => {
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(1, bindGroup)
+      pass.draw(3)
+    }
+    // Deferred lighting (depthCompare: always). Background pixels are left black
+    // for the sky, which draws over them later in this same pass.
+    fullscreen(this.#pipelines.deferredLighting, this.#bg.deferredLighting)
+    // Firefly lights, then the bike's head/tail lamps — both fullscreen additive.
     const eff = this.effectsSystem
-    if (this.#passBindGroups.fireflyLights && eff && (eff.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) {
-      pass.setPipeline(this.#pipelines.fireflyLights)
-      pass.setBindGroup(1, this.#passBindGroups.fireflyLights)
-      pass.draw(3)
+    if ((eff?.fireflyCount ?? 0) > 0 && ctx.fireflyFactor > 0) {
+      fullscreen(this.#pipelines.fireflyLights, this.#bg.fireflyLights)
     }
-    // Bike head/tail lamps cast onto text, frame, and ground (fullscreen additive).
-    if (this.#passBindGroups.bikeLights && this.#bikeLights.length > 0) {
-      pass.setPipeline(this.#pipelines.bikeLights)
-      pass.setBindGroup(1, this.#passBindGroups.bikeLights)
-      pass.draw(3)
-    }
+    if (this.#bikeLights.length > 0) fullscreen(this.#pipelines.bikeLights, this.#bg.bikeLights)
   }
 
   #drawForward(pass, ctx, timeInfo) {
     // Sky (depthCompare: less-equal — only shades the background pixels the
     // deferred draw left black).
-    if (this.#passBindGroups.sky) {
-      pass.setPipeline(this.#pipelines.sky)
-      pass.setBindGroup(1, this.#passBindGroups.sky)
-      pass.draw(3)
-    }
-    // Rain (depthCompare: less, alpha blend).
-    if (timeInfo.rain > 0 && this.#rainBuffers && this.#passBindGroups.rain) {
-      pass.setPipeline(this.#pipelines.rain)
-      pass.setBindGroup(1, this.#passBindGroups.rain)
-      pass.setVertexBuffer(0, this.#rainBuffers.lineOffsets)
-      pass.setVertexBuffer(1, this.#rainBuffers.positions)
-      pass.draw(2, this.#rainBuffers.count)
-    }
+    pass.setPipeline(this.#pipelines.sky)
+    pass.setBindGroup(1, this.#bg.sky)
+    pass.draw(3)
+
     const eff = this.effectsSystem
-    // Particles (depthCompare: less, additive).
-    if (this.#particleBuffers && eff?.particleCount) {
-      this.#particleData[0] = timeInfo.ambientIntensity
-      ctx.queue.writeBuffer(this.#particleUniformBuffer, 0, this.#particleData)
-      pass.setPipeline(this.#pipelines.particle)
-      pass.setBindGroup(1, this.#particleBg)
-      pass.setVertexBuffer(0, this.#particleBuffers.positions)
-      pass.setVertexBuffer(1, this.#particleBuffers.sizes)
-      pass.setVertexBuffer(2, this.#particleBuffers.lives)
-      pass.setVertexBuffer(3, this.#particleBuffers.phases)
-      pass.draw(4, eff.particleCount)
+    if (timeInfo.rain > 0 && this.#geo.rain) {
+      this.#drawInstanced(pass, this.#pipelines.rain, this.#bg.rain, this.#geo.rain, 2, this.#geo.rain.count)
     }
-    // Firefly sprites (depthCompare: less, additive).
-    const factor = ctx.fireflyFactor
-    if (this.#fireflyBuffers && eff?.fireflyCount && factor > 0) {
-      this.#fireflySpriteData[0] = factor
-      ctx.queue.writeBuffer(this.#fireflySpriteUniformBuffer, 0, this.#fireflySpriteData)
-      pass.setPipeline(this.#pipelines.fireflySprite)
-      pass.setBindGroup(1, this.#fireflySpriteBg)
-      pass.setVertexBuffer(0, this.#fireflyBuffers.positions)
-      pass.setVertexBuffer(1, this.#fireflyBuffers.brightness)
-      pass.draw(4, eff.fireflyCount)
+    if (this.#geo.particle && eff?.particleCount) {
+      this.#uniforms.particle.f[0] = timeInfo.ambientIntensity
+      this.#uniforms.particle.write()
+      this.#drawInstanced(pass, this.#pipelines.particle, this.#bg.particle, this.#geo.particle, 4, eff.particleCount)
     }
-    // Flies + bees (daytime, depthCompare: less, alpha blend). Same pipeline,
-    // different per-pass uniform (color/size/kind) and vertex buffers.
-    // prettier-ignore
-    this.#drawInsects(pass, ctx, timeInfo, this.#flyBuffers, this.#flyBg, this.#flyUniformBuffer, this.#flyData, ctx.flyFactor)
-    // prettier-ignore
-    this.#drawInsects(pass, ctx, timeInfo, this.#beeBuffers, this.#beeBg, this.#beeUniformBuffer, this.#beeData, ctx.beeFactor)
+    if (this.#geo.firefly && eff?.fireflyCount && ctx.fireflyFactor > 0) {
+      this.#uniforms.fireflySprite.f[0] = ctx.fireflyFactor
+      this.#uniforms.fireflySprite.write()
+      this.#drawInstanced(pass, this.#pipelines.fireflySprite, this.#bg.fireflySprite, this.#geo.firefly, 4, eff.fireflyCount) // prettier-ignore
+    }
+    // Flies and bees share the insect pipeline, differing only in their per-pass
+    // uniform (colour, size, kind) and instance buffers.
+    this.#drawInsects(pass, timeInfo, "fly", ctx.flyFactor)
+    this.#drawInsects(pass, timeInfo, "bee", ctx.beeFactor)
+
     for (const mod of this.#eventModules) mod.renderForward(pass, ctx)
   }
 
-  #drawInsects(pass, ctx, timeInfo, buffers, bindGroup, uniformBuffer, data, factor) {
-    if (!buffers || !buffers.count || factor <= 0) return
-    data[3] = data[7] * factor // opacity = baseOpacity * visibility
-    data[6] = timeInfo.ambientIntensity
-    ctx.queue.writeBuffer(uniformBuffer, 0, data)
-    pass.setPipeline(this.#pipelines.insect)
-    pass.setBindGroup(1, bindGroup)
-    pass.setVertexBuffer(0, buffers.positions)
-    pass.setVertexBuffer(1, buffers.sizes)
-    pass.setVertexBuffer(2, buffers.phases)
-    pass.draw(4, buffers.count)
+  #drawInsects(pass, timeInfo, name, factor) {
+    const mesh = this.#geo[name]
+    if (!mesh?.count || factor <= 0) return
+    const uniforms = this.#uniforms[name]
+    uniforms.f[3] = uniforms.f[7] * factor // opacity = baseOpacity × visibility
+    uniforms.f[6] = timeInfo.ambientIntensity
+    uniforms.write()
+    this.#drawInstanced(pass, this.#pipelines.insect, this.#bg[name], mesh, 4, mesh.count)
+  }
+
+  // Fullscreen draw into a wrapped render target ({ view, width, height }).
+  #blit(encoder, target, pipeline, bg0, bg1, { clearValue = CLEAR_BLACK, loadOp = "clear", timestampWrites } = {}) {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [colorAttachment(target.view, clearValue, loadOp)],
+      timestampWrites,
+    })
+    pass.setViewport(0, 0, target.width, target.height, 0, 1)
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(0, bg0)
+    pass.setBindGroup(1, bg1)
+    pass.draw(3)
+    pass.end()
   }
 
   // Temporal SSAO — stable per-pixel kernel rotation, only temporalAlpha changes.
@@ -1760,127 +1448,82 @@ export class Renderer {
   // plus linear upsample in postprocess keeps noise acceptable.
   // Desktop runs FULL-res with temporal history — do not move this to half-res;
   // half-res + reprojected history produces horizontal scanlines (2026-07-07).
-  #renderSSAOPass(encoder, ctx) {
+  #renderSSAOPass(encoder) {
     const rt = this.#renderTargets
-    if (!rt || !this.#ssaoBgs) return
-    const idx = S.lowSpec ? 0 : this.#ssaoFrame % 2
-    this.#ssaoData[2] = S.lowSpec ? 1 : this.#ssaoFrame === 0 ? 1 : 0.1
-    ctx.queue.writeBuffer(this.#ssaoUniformBuffer, 0, this.#ssaoData)
+    if (!rt || !this.#bg.ssao) return
+    const index = S.lowSpec ? 0 : this.#ssaoFrame % 2
+    this.#uniforms.ssao.f[2] = S.lowSpec || this.#ssaoFrame === 0 ? 1 : 0.1
+    this.#uniforms.ssao.write()
 
-    const ssaoTarget = idx === 0 ? rt.ssao : rt.ssaoPrev
     const hasBlur = !S.lowSpec
-    this.#fullscreenTarget(
-      encoder,
-      ssaoTarget,
-      this.#pipelines.ssao,
-      this.#frameBindGroup,
-      this.#ssaoBgs[idx],
-      CLEAR_WHITE,
-      "clear",
-      hasBlur ? this.#profiler?.spanBegin("ssao") : this.#profiler?.pass("ssao")
-    )
+    const target = index === 0 ? rt.ssao : rt.ssaoPrev
+    this.#blit(encoder, target, this.#pipelines.ssao, this.#bg.frame, this.#bg.ssao[index], {
+      clearValue: CLEAR_WHITE,
+      timestampWrites: hasBlur ? this.#profiler?.spanBegin("ssao") : this.#profiler?.pass("ssao"),
+    })
     if (hasBlur) {
-      this.#fullscreenTarget(
-        encoder,
-        rt.ssaoBlur,
-        this.#pipelines.ssaoBlur,
-        this.#frameBindGroup,
-        this.#ssaoBlurBgs[idx],
-        CLEAR_WHITE,
-        "clear",
-        this.#profiler?.spanEnd("ssao")
-      )
+      this.#blit(encoder, rt.ssaoBlur, this.#pipelines.ssaoBlur, this.#bg.frame, this.#bg.ssaoBlur[index], {
+        clearValue: CLEAR_WHITE,
+        timestampWrites: this.#profiler?.spanEnd("ssao"),
+      })
     }
     this.#ssaoFrame++
   }
 
   // Bloom: extract highlights → downsample pyramid → additive upsample → bloomExtract.
-  #renderBloomPass(encoder, ctx, timeInfo) {
+  #renderBloomPass(encoder, timeInfo) {
     const rt = this.#renderTargets
-    if (!rt || !this.#bloomExtractBg) return
-    const empty = this.#emptyBindGroup
+    if (!rt || !this.#bg.bloomExtract) return
+    const empty = this.#bg.empty
 
-    this.#bloomExtractData[0] = timeInfo.bloomThreshold
-    ctx.queue.writeBuffer(this.#bloomExtractUniformBuffer, 0, this.#bloomExtractData)
+    this.#uniforms.bloomExtract.f[0] = timeInfo.bloomThreshold
+    this.#uniforms.bloomExtract.write()
 
-    this.#fullscreenTarget(
-      encoder,
-      rt.bloomExtract,
-      this.#pipelines.bloomExtract,
-      empty,
-      this.#bloomExtractBg,
-      CLEAR_BLACK,
-      "clear",
-      this.#profiler?.spanBegin("bloom")
-    )
+    this.#blit(encoder, rt.bloomExtract, this.#pipelines.bloomExtract, empty, this.#bg.bloomExtract, {
+      timestampWrites: this.#profiler?.spanBegin("bloom"),
+    })
     for (let i = 0; i < BLOOM_LEVELS; i++) {
-      this.#fullscreenTarget(encoder, rt.bloomMips[i], this.#pipelines.bloomDown, empty, this.#bloomDownBgs[i])
+      this.#blit(encoder, rt.bloomMips[i], this.#pipelines.bloomDown, empty, this.#bg.bloomDown[i])
     }
     for (let i = 0; i < BLOOM_LEVELS; i++) {
-      this.#fullscreenTarget(
-        encoder,
-        this.#bloomUpTargets[i],
-        this.#pipelines.bloomUp,
-        empty,
-        this.#bloomUpBgs[i],
-        CLEAR_BLACK,
-        "load",
-        i === BLOOM_LEVELS - 1 ? this.#profiler?.spanEnd("bloom") : undefined
-      )
+      this.#blit(encoder, this.#bloomUpTargets[i], this.#pipelines.bloomUp, empty, this.#bg.bloomUp[i], {
+        loadOp: "load",
+        timestampWrites: i === BLOOM_LEVELS - 1 ? this.#profiler?.spanEnd("bloom") : undefined,
+      })
     }
   }
 
-  #renderGodRaysPass(encoder, ctx, timeInfo) {
+  #renderGodRaysPass(encoder, timeInfo) {
     const rt = this.#renderTargets
-    if (!rt || !this.#godRayBg || timeInfo.godRaySteps < 1) return
-    this.#fullscreenTarget(
-      encoder,
-      rt.godRay,
-      this.#pipelines.godrays,
-      this.#frameBindGroup,
-      this.#godRayBg,
-      CLEAR_BLACK,
-      "clear",
-      this.#profiler?.pass("godrays")
-    )
+    if (!rt || !this.#bg.godrays || timeInfo.godRaySteps < 1) return
+    this.#blit(encoder, rt.godRay, this.#pipelines.godrays, this.#bg.frame, this.#bg.godrays, {
+      timestampWrites: this.#profiler?.pass("godrays"),
+    })
   }
 
   // Half-res depth of field: signed-CoC downsample → hexagonal bokeh gather.
   // Composited against the sharp scene in postprocess by the gather's blend alpha.
-  #renderDofPass(encoder, ctx) {
+  #renderDofPass(encoder) {
     const rt = this.#renderTargets
-    if (!rt || !this.#dofCocBg) return
-    const empty = this.#emptyBindGroup
-    this.#fullscreenTarget(
-      encoder,
-      rt.dofDown,
-      this.#pipelines.dofCoc,
-      empty,
-      this.#dofCocBg,
-      CLEAR_BLACK,
-      "clear",
-      this.#profiler?.spanBegin("dof")
-    )
-    this.#fullscreenTarget(
-      encoder,
-      rt.dofBlur,
-      this.#pipelines.dofBlur,
-      empty,
-      this.#dofBlurBg,
-      CLEAR_TRANSPARENT,
-      "clear",
-      this.#profiler?.spanEnd("dof")
-    )
+    if (!rt || !this.#bg.dofCoc) return
+    const empty = this.#bg.empty
+    this.#blit(encoder, rt.dofDown, this.#pipelines.dofCoc, empty, this.#bg.dofCoc, {
+      timestampWrites: this.#profiler?.spanBegin("dof"),
+    })
+    this.#blit(encoder, rt.dofBlur, this.#pipelines.dofBlur, empty, this.#bg.dofBlur, {
+      clearValue: CLEAR_TRANSPARENT,
+      timestampWrites: this.#profiler?.spanEnd("dof"),
+    })
   }
 
   #renderPostProcessPass(encoder, canvasView) {
     const pass = encoder.beginRenderPass({
-      colorAttachments: [{ view: canvasView, clearValue: CLEAR_BLACK, loadOp: "clear", storeOp: "store" }],
+      colorAttachments: [colorAttachment(canvasView)],
       timestampWrites: this.#profiler?.pass("postprocess"),
     })
     pass.setPipeline(this.#pipelines.postprocess)
-    pass.setBindGroup(0, this.#frameBindGroup)
-    pass.setBindGroup(1, this.#postprocessBg)
+    pass.setBindGroup(0, this.#bg.frame)
+    pass.setBindGroup(1, this.#bg.postprocess)
     pass.draw(3)
     pass.end()
   }
@@ -1888,171 +1531,32 @@ export class Renderer {
   // Main render loop
   // ################
 
+  #scheduleNextFrame() {
+    this.animationFrameId = this.#visible && !hasError() ? requestAnimationFrame(this.#renderCB) : null
+  }
+
   #render() {
     // iOS TBDR back-pressure gate: don't queue another frame until the GPU
     // drains the previous one, or the command queue grows unbounded.
-    if (this.#gpuFramePending) {
-      this.animationFrameId = this.#visible ? requestAnimationFrame(this.#renderCB) : null
-      return
-    }
+    if (this.#gpuFramePending) return this.#scheduleNextFrame()
 
     const ctx = this.#ctx
-    const now = performance.now()
-    ctx.deltaTime = now - ctx.now
-    ctx.now = now
-    ctx.currentTime = now
-
-    // Time + adaptive quality
-    if (this.cameraAnimator?.isActive) this.timeSystem.rawTime(ctx.deltaTime)
-    else this.timeSystem.lerpTime(ctx.deltaTime)
-    // When the day is fast-forwarded the scene clock outruns real time; the CPU
-    // sim systems integrate against this scaled delta so they keep pace with the
-    // sun instead of crawling. Capped for integrator stability (MAX_SIM_TIME_SCALE).
-    ctx.simDeltaTime = ctx.deltaTime * Math.min(this.timeSystem.timeScale, MAX_SIM_TIME_SCALE)
-    let timeInfo = this.timeSystem.timeInfo
-    if (!this.cameraAnimator?.isActive) {
-      this.adaptiveQuality.tick(now)
-      timeInfo = this.adaptiveQuality.apply(timeInfo)
-    }
-    ctx.timeInfo = timeInfo
-
-    // Sun / moon / primary light blend — all written into stable ctx slots
-    computeAtmosphereSkyColorInto(ctx.skyColor, timeInfo)
-    normalizeInto(ctx.sunDirection, timeInfo.sunPosition.x, timeInfo.sunPosition.y, timeInfo.sunPosition.z)
-    const blend = smoothstep(Math.max(0, Math.min(1, timeInfo.sunPosition.y / 0.05)))
-    const inv = 1 - blend
-    const sp = timeInfo.sunPosition
-    const mp = timeInfo.moonPosition
-    const pd = normalizeInto(
-      this.#primaryDir,
-      sp.x * blend + mp.x * inv,
-      sp.y * blend + mp.y * inv,
-      sp.z * blend + mp.z * inv
-    )
-    ctx.sunBlend = blend
-    ctx.primaryLightDir.x = pd[0]
-    ctx.primaryLightDir.y = pd[1]
-    ctx.primaryLightDir.z = pd[2]
-    ctx.primaryLightStrength = blend + inv * 0.15
-    ctx.fireflyFactor = computeFireflyFactor(timeInfo)
-    const dayFactor = computeDayFactor(timeInfo)
-    ctx.flyFactor = dayFactor * timeInfo.flyIntensity
-    ctx.beeFactor = dayFactor * timeInfo.beeIntensity
-
-    // Idle camera drift toward init pose when not user-controlled
-    if (!this.camera.locked && !this.camera.isTouching && !this.cameraAnimator?.isActive) {
-      const tgt = this.cameraTarget()
-      const la = ctx.lookAt
-      la[0] += (tgt.x - la[0]) * 0.025
-      la[1] += (tgt.y - la[1]) * 0.05
-      la[2] += (tgt.z - la[2]) * 0.025
-      const cp = this.camera.position
-      const k = S.timeInertia
-      cp[0] += (S.initPos[0] - cp[0]) * k
-      cp[1] += (S.initPos[1] - cp[1]) * k
-      cp[2] += (S.initPos[2] - cp[2]) * k
-      cp[1] += (this.#sampleGround(cp[0], cp[2]) + S.idleY - cp[1]) * k
-      this.camera.lookAtLerp(la, k)
-    }
-
-    this.camera.update(ctx.deltaTime)
-    this.cameraAnimator?.update(ctx.deltaTime * MS_TO_SEC)
-
-    // View matrices + derivatives
-    this.#profiler?.cpuBegin("matrices")
-    ctx.viewMatrix = this.camera.getViewMatrix(timeInfo)
-    ctx.invViewMatrix = invertMatrix4Into(this.#invView, ctx.viewMatrix)
-    ctx.viewProjectionMatrix = multiplyMMInto(this.#viewProj, ctx.projectionMatrix, ctx.viewMatrix)
-    ctx.invViewProjectionMatrix = multiplyMMInto(this.#invViewProj, ctx.invViewMatrix, ctx.invProjectionMatrix)
-    ctx.lightSpaceMatrix = this.#computeLightSpaceMatrix(ctx)
-    this.#profiler?.cpuEnd("matrices")
-
-    this.windSystem.update(ctx.simDeltaTime, timeInfo)
-    this.#updateGrassTileAnchors(ctx)
-    if (this.#flowerField && this.#flowerField.update(ctx.cameraPosition[0], ctx.cameraPosition[2])) {
-      ctx.queue.writeBuffer(this.#flowerBuffers.instances, 0, this.#flowerField.data)
-    }
-
-    // Per-tile grass frustum culling → merged instance ranges for the draws.
-    this.#grassCullingEnabled = (timeInfo.grassCulling ?? 1) > 0.5 && !!this.#grassBuffers
-    if (this.#grassCullingEnabled) {
-      const heightFactor = timeInfo.grassHeightFactor ?? 1
-      this.#viewCuller.cull(ctx.viewProjectionMatrix, this.#grassBuffers, heightFactor)
-      if (ctx.lightSpaceMatrix) this.#shadowCuller.cull(ctx.lightSpaceMatrix, this.#grassBuffers, heightFactor)
-    }
-
-    const mouseRay = this.#computeMouseRay(ctx)
-    this.#updateCursorWorldPos(ctx, mouseRay)
-    this.#updateSunProjection(ctx)
-
-    // Frame uniforms (group 0, shared by every pass) — the previous VP feeds
-    // TAA-style reprojection, so cache the current VP for next frame.
-    writeFrameUniforms(
-      ctx.queue,
-      this.#frameUniformBuffer,
-      ctx,
-      this.windSystem.uniforms,
-      this.#prevViewProjection,
-      this.#frameUniformData
-    )
-    if (ctx.viewProjectionMatrix) {
-      this.#prevViewProjection ??= new Float32Array(16)
-      this.#prevViewProjection.set(ctx.viewProjectionMatrix)
-    }
-
-    // Cloud shadow is re-baked every N frames.
-    this.#cloudShadowThisFrame = this.#cloudShadowFrame++ % CLOUD_SHADOW_INTERVAL === 0 && !!this.#cloudShadowTexture
-    if (this.#cloudShadowThisFrame) {
-      writeCloudShadowUniforms(ctx.device, this.#cloudShadowUniformBuffer, ctx, this.windSystem.uniforms)
-    }
-
-    // Expensive CPU ray marches — throttled.
-    if (this.#lightingFrame++ % LIGHTING_INTERVAL === 0) {
-      const visibility = computeSunVisibility(ctx.primaryLightDir, ctx.cameraPosition, this.#mountainHeightmap)
-      const yFade = Math.max(0, Math.min(1, ctx.primaryLightDir.y / 0.1))
-      ctx.mountainVisibility = visibility * yFade * ctx.primaryLightStrength
-      this.#cloudSunOcclusion = computeCloudLightOcclusion(
-        ctx,
-        this.#noiseData,
-        this.windSystem.uniforms,
-        this.#cloudSunOcclusion
-      )
-      ctx.cloudLightOcclusion = this.#cloudSunOcclusion
-    }
-
-    // Per-subsystem uniform writes
-    this.#profiler?.cpuBegin("uniforms")
-    this.#writeGrassUniforms(ctx, timeInfo)
-    this.#writeFlowerUniforms(ctx, timeInfo)
-    if (this.boidsSystem && this.#birdBuffers) {
-      this.#profiler?.cpuBegin("boids")
-      this.boidsSystem.update(ctx.simDeltaTime, ctx.cameraPosition, ctx.lookAt, timeInfo, mouseRay)
-      updateBirdInstances(ctx.queue, this.#birdBuffers, this.boidsSystem)
-      this.#profiler?.cpuEnd("boids")
-      this.#writeBirdUniforms(ctx, timeInfo)
-    }
-    this.#writeDeferredLightingUniforms(ctx, timeInfo)
-    this.#writeBikeLightUniforms(ctx, timeInfo)
-    this.#updateEffects(ctx, timeInfo)
-    for (const mod of this.#eventModules) mod.update(ctx.simDeltaTime, ctx, timeInfo, this.windSystem.uniforms)
-    this.#writeSkyUniforms(ctx, timeInfo)
-    this.#writeRainUniforms(ctx, timeInfo)
-    this.#writeGodRayUniforms(ctx, timeInfo)
-    this.#writeDofUniforms(ctx, timeInfo)
-    this.#writeFogUniforms(ctx, timeInfo)
-    this.#writePostProcessUniforms(ctx, timeInfo)
-    this.#profiler?.cpuEnd("uniforms")
+    const timeInfo = this.#advanceClock(ctx)
+    this.#updateLighting(ctx, timeInfo)
+    this.#updateCamera(ctx, timeInfo)
+    const mouseRay = this.#updateWorld(ctx, timeInfo)
+    this.#updateSimulations(ctx, timeInfo, mouseRay)
+    this.#writeFrameUniforms(ctx, timeInfo)
 
     // Acquire canvas texture. On iOS presentation can transiently fail — bail and retry.
     let canvasTexture
     try {
       canvasTexture = ctx.canvasCtx.getCurrentTexture()
     } catch {
-      if (this.#visible) this.animationFrameId = requestAnimationFrame(this.#renderCB)
-      return
+      return this.#scheduleNextFrame()
     }
 
-    if (this.#grassBuffers) this.#grassTileWorker.flush(ctx.queue, this.#grassBuffers)
+    if (this.#geo.grass) this.#grassTileWorker.flush(ctx.queue, this.#geo.grass)
 
     this.#profiler?.cpuBegin("encode")
     withErrorScopes(ctx.device, "frame", () => this.#encodeFrame(ctx, timeInfo, canvasTexture))
@@ -2069,78 +1573,197 @@ export class Renderer {
       ctx.queue.onSubmittedWorkDone().then(() => this.#doCapture())
     }
 
-    this.animationFrameId = this.#visible && !hasError() ? requestAnimationFrame(this.#renderCB) : null
+    this.#scheduleNextFrame()
   }
 
-  #updateEffects(ctx, timeInfo) {
+  // Advances the scene clock and returns the (adaptive-quality adjusted) timeInfo.
+  #advanceClock(ctx) {
+    const now = performance.now()
+    ctx.deltaTime = now - ctx.now
+    ctx.now = now
+
+    const animating = this.cameraAnimator?.isActive
+    if (animating) this.timeSystem.rawTime(ctx.deltaTime)
+    else this.timeSystem.lerpTime(ctx.deltaTime)
+    // When the day is fast-forwarded the scene clock outruns real time; the CPU
+    // sim systems integrate against this scaled delta so they keep pace with the
+    // sun instead of crawling. Capped for integrator stability (MAX_SIM_TIME_SCALE).
+    ctx.simDeltaTime = ctx.deltaTime * Math.min(this.timeSystem.timeScale, MAX_SIM_TIME_SCALE)
+
+    let timeInfo = this.timeSystem.timeInfo
+    if (!animating) {
+      this.adaptiveQuality.tick(now)
+      timeInfo = this.adaptiveQuality.apply(timeInfo)
+    }
+    ctx.timeInfo = timeInfo
+    return timeInfo
+  }
+
+  // Sun / moon / primary light blend — all written into stable ctx slots.
+  #updateLighting(ctx, timeInfo) {
+    computeAtmosphereSkyColorInto(ctx.skyColor, timeInfo)
+    const sun = timeInfo.sunPosition
+    const moon = timeInfo.moonPosition
+    normalizeInto(ctx.sunDirection, sun.x, sun.y, sun.z)
+    const blend = smoothstep(Math.max(0, Math.min(1, sun.y / 0.05)))
+    const inv = 1 - blend
+    const dir = normalizeInto(
+      this.#primaryDir,
+      sun.x * blend + moon.x * inv,
+      sun.y * blend + moon.y * inv,
+      sun.z * blend + moon.z * inv
+    )
+    ctx.sunBlend = blend
+    ctx.primaryLightDir.x = dir[0]
+    ctx.primaryLightDir.y = dir[1]
+    ctx.primaryLightDir.z = dir[2]
+    ctx.primaryLightStrength = blend + inv * 0.15
+
+    const night = nightFactor(timeInfo.timeOfDay)
+    ctx.fireflyFactor = night * timeInfo.fireflyIntensity
+    ctx.flyFactor = (1 - night) * timeInfo.flyIntensity
+    ctx.beeFactor = (1 - night) * timeInfo.beeIntensity
+  }
+
+  #updateCamera(ctx, timeInfo) {
+    // Idle drift back toward the initial pose when not user-controlled.
+    if (!this.camera.locked && !this.camera.isTouching && !this.cameraAnimator?.isActive) {
+      const target = this.cameraTarget()
+      const lookAt = ctx.lookAt
+      lookAt[0] += (target.x - lookAt[0]) * 0.025
+      lookAt[1] += (target.y - lookAt[1]) * 0.05
+      lookAt[2] += (target.z - lookAt[2]) * 0.025
+      const pos = this.camera.position
+      const k = S.timeInertia
+      pos[0] += (S.initPos[0] - pos[0]) * k
+      pos[1] += (S.initPos[1] - pos[1]) * k
+      pos[2] += (S.initPos[2] - pos[2]) * k
+      pos[1] += (this.#sampleGround(pos[0], pos[2]) + S.idleY - pos[1]) * k
+      this.camera.lookAtLerp(lookAt, k)
+    }
+
+    this.camera.update(ctx.deltaTime)
+    this.cameraAnimator?.update(ctx.deltaTime * MS_TO_SEC)
+
+    this.#profiler?.cpuBegin("matrices")
+    ctx.viewMatrix = this.camera.getViewMatrix(timeInfo)
+    ctx.invViewMatrix = invertMatrix4Into(this.#invView, ctx.viewMatrix)
+    ctx.viewProjectionMatrix = multiplyMMInto(this.#viewProj, ctx.projectionMatrix, ctx.viewMatrix)
+    ctx.invViewProjectionMatrix = multiplyMMInto(this.#invViewProj, ctx.invViewMatrix, ctx.invProjectionMatrix)
+    ctx.lightSpaceMatrix = this.#computeLightSpaceMatrix(ctx)
+    this.#profiler?.cpuEnd("matrices")
+  }
+
+  // Wind, streamed geometry, culling and cursor picking. Returns the mouse ray.
+  #updateWorld(ctx, timeInfo) {
+    this.windSystem.update(ctx.simDeltaTime, timeInfo)
+    this.#updateGrassTileAnchors(ctx)
+    if (this.#flowerField?.update(ctx.cameraPosition[0], ctx.cameraPosition[2])) {
+      ctx.queue.writeBuffer(this.#geo.flower.instances, 0, this.#flowerField.data)
+    }
+
+    // Per-tile grass frustum culling → merged instance ranges for the draws.
+    this.#grassCullingEnabled = (timeInfo.grassCulling ?? 1) > 0.5 && !!this.#geo.grass
+    if (this.#grassCullingEnabled) {
+      const heightFactor = timeInfo.grassHeightFactor ?? 1
+      this.#viewCuller.cull(ctx.viewProjectionMatrix, this.#geo.grass, heightFactor)
+      if (ctx.lightSpaceMatrix) this.#shadowCuller.cull(ctx.lightSpaceMatrix, this.#geo.grass, heightFactor)
+    }
+
+    const mouseRay = this.#computeMouseRay(ctx)
+    this.#updateCursorWorldPos(ctx, mouseRay)
+    this.#updateSunProjection(ctx)
+
+    // The previous view-projection feeds TAA-style reprojection, so cache the
+    // current one for the next frame after the write.
+    writeFrameUniforms(this.#uniforms.frame, ctx, this.windSystem.uniforms, this.#prevViewProjection)
+    if (ctx.viewProjectionMatrix) {
+      this.#prevViewProjection ??= new Float32Array(16)
+      this.#prevViewProjection.set(ctx.viewProjectionMatrix)
+    }
+    return mouseRay
+  }
+
+  // CPU simulations and the streamed instance buffers they feed.
+  #updateSimulations(ctx, timeInfo, mouseRay) {
+    this.#cloudShadowThisFrame = this.#cloudShadowFrame++ % CLOUD_SHADOW_INTERVAL === 0 && !!this.#tex.cloudShadow
+    if (this.#cloudShadowThisFrame) {
+      writeCloudShadowUniforms(this.#uniforms.cloudShadow, ctx, this.windSystem.uniforms)
+    }
+
+    // Expensive CPU ray marches — throttled.
+    if (this.#lightingFrame++ % LIGHTING_INTERVAL === 0) {
+      const visibility = computeSunVisibility(ctx.primaryLightDir, ctx.cameraPosition, this.#mountainHeightmap)
+      const yFade = Math.max(0, Math.min(1, ctx.primaryLightDir.y / 0.1))
+      ctx.mountainVisibility = visibility * yFade * ctx.primaryLightStrength
+      this.#cloudSunOcclusion = computeCloudLightOcclusion(
+        ctx,
+        this.#noiseData,
+        this.windSystem.uniforms,
+        this.#cloudSunOcclusion
+      )
+      ctx.cloudLightOcclusion = this.#cloudSunOcclusion
+    }
+
+    if (this.boidsSystem && this.#geo.bird) {
+      this.#profiler?.cpuBegin("boids")
+      this.boidsSystem.update(ctx.simDeltaTime, ctx.cameraPosition, ctx.lookAt, timeInfo, mouseRay)
+      updateBirdInstances(ctx.queue, this.#geo.bird, this.boidsSystem)
+      this.#profiler?.cpuEnd("boids")
+    }
+
     const eff = this.effectsSystem
-    if (!eff) return
-    eff.update(ctx.simDeltaTime, ctx.cameraPosition)
-    this.#writeFireflyUniforms(ctx, timeInfo)
-    if (this.#particleBuffers && eff.particlePositions) {
-      ctx.queue.writeBuffer(this.#particleBuffers.positions, 0, eff.particlePositions)
-      ctx.queue.writeBuffer(this.#particleBuffers.lives, 0, eff.particleLives)
+    if (eff) {
+      eff.update(ctx.simDeltaTime, ctx.cameraPosition)
+      const stream = (mesh, source) => mesh && source && ctx.queue.writeBuffer(mesh.positions, 0, source)
+      stream(this.#geo.particle, eff.particlePositions)
+      if (this.#geo.particle && eff.particleLives) {
+        ctx.queue.writeBuffer(this.#geo.particle.lives, 0, eff.particleLives)
+      }
+      if (this.#geo.firefly && eff.fireflyPositions) {
+        ctx.queue.writeBuffer(this.#geo.firefly.positions, 0, eff.fireflyPositions)
+        ctx.queue.writeBuffer(this.#geo.firefly.brightness, 0, eff.fireflyBrightness)
+      }
+      if (ctx.flyFactor > 0) stream(this.#geo.fly, eff.flyPositions)
+      if (ctx.beeFactor > 0) stream(this.#geo.bee, eff.beePositions)
     }
-    if (this.#fireflyBuffers && eff.fireflyPositions) {
-      ctx.queue.writeBuffer(this.#fireflyBuffers.positions, 0, eff.fireflyPositions)
-      ctx.queue.writeBuffer(this.#fireflyBuffers.brightness, 0, eff.fireflyBrightness)
-    }
-    if (this.#flyBuffers && eff.flyPositions && ctx.flyFactor > 0) {
-      ctx.queue.writeBuffer(this.#flyBuffers.positions, 0, eff.flyPositions)
-    }
-    if (this.#beeBuffers && eff.beePositions && ctx.beeFactor > 0) {
-      ctx.queue.writeBuffer(this.#beeBuffers.positions, 0, eff.beePositions)
-    }
+
+    for (const mod of this.#eventModules) mod.update(ctx.simDeltaTime, ctx, timeInfo, this.windSystem.uniforms)
   }
 
   #encodeFrame(ctx, timeInfo, canvasTexture) {
     this.#profiler?.beginFrame()
     const encoder = ctx.device.createCommandEncoder()
+    const scoped = (name, record) => withErrorScopes(ctx.device, name, record)
 
     if (this.#cloudShadowThisFrame) {
-      recordCloudShadowBake(
+      recordBake(
         encoder,
         this.#pipelines.cloudShadowBake,
+        this.#tex.cloudShadow.view,
         this.#fullscreenQuad,
-        this.#cloudShadowBindGroup,
-        this.#cloudShadowTextureView
+        this.#bg.cloudShadowBake
       )
     }
 
-    withErrorScopes(ctx.device, "shadow", () => this.#renderShadowPass(encoder, ctx))
-    withErrorScopes(ctx.device, "gbuffer", () => this.#renderGBufferPass(encoder, ctx))
-    withErrorScopes(ctx.device, "scene", () => this.#renderScenePass(encoder, ctx, timeInfo))
+    scoped("shadow", () => this.#renderShadowPass(encoder, ctx))
+    scoped("gbuffer", () => this.#renderGBufferPass(encoder, ctx))
+    scoped("scene", () => this.#renderScenePass(encoder, ctx, timeInfo))
 
-    if (isActive(timeInfo.ssaoIntensity)) {
-      withErrorScopes(ctx.device, "ssao", () => this.#renderSSAOPass(encoder, ctx))
-    }
+    if (isActive(timeInfo.ssaoIntensity)) scoped("ssao", () => this.#renderSSAOPass(encoder))
     if (isActive(timeInfo.bloomIntensity) && !isNight(timeInfo)) {
-      withErrorScopes(ctx.device, "bloom", () => this.#renderBloomPass(encoder, ctx, timeInfo))
+      scoped("bloom", () => this.#renderBloomPass(encoder, timeInfo))
     }
-    if (isActive(timeInfo.godRayIntensity)) {
-      withErrorScopes(ctx.device, "godrays", () => this.#renderGodRaysPass(encoder, ctx, timeInfo))
-    }
-    if (timeInfo.depthOfField > 0) {
-      withErrorScopes(ctx.device, "dof", () => this.#renderDofPass(encoder, ctx))
-    }
+    if (isActive(timeInfo.godRayIntensity)) scoped("godrays", () => this.#renderGodRaysPass(encoder, timeInfo))
+    if (timeInfo.depthOfField > 0) scoped("dof", () => this.#renderDofPass(encoder))
 
-    if (this.#renderTargets && this.#postprocessBg) {
-      withErrorScopes(ctx.device, "postprocess", () => this.#renderPostProcessPass(encoder, canvasTexture.createView()))
+    if (this.#renderTargets && this.#bg.postprocess) {
+      scoped("postprocess", () => this.#renderPostProcessPass(encoder, canvasTexture.createView()))
     } else {
       // Fallback: clear to a sky-tinted color if post-process isn't ready.
       const sunY = Math.max(0, timeInfo.sunPosition.y)
-      encoder
-        .beginRenderPass({
-          colorAttachments: [
-            {
-              view: canvasTexture.createView(),
-              clearValue: { r: 0.15 + sunY * 0.35, g: 0.2 + sunY * 0.4, b: 0.3 + sunY * 0.55, a: 1 },
-              loadOp: "clear",
-              storeOp: "store",
-            },
-          ],
-        })
-        .end()
+      const sky = { r: 0.15 + sunY * 0.35, g: 0.2 + sunY * 0.4, b: 0.3 + sunY * 0.55, a: 1 }
+      encoder.beginRenderPass({ colorAttachments: [colorAttachment(canvasTexture.createView(), sky)] }).end()
     }
 
     this.#profiler?.endFrame(encoder)
@@ -2152,6 +1775,9 @@ export class Renderer {
     }
   }
 
+  // Capture & teardown
+  // ##################
+
   requestCapture() {
     this.#capturePending = true
   }
@@ -2160,11 +1786,11 @@ export class Renderer {
     this.canvas.toBlob(blob => {
       if (!blob) return
       const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
-      a.href = url
-      a.download = `je2050-${ts}.png`
-      a.click()
+      const link = document.createElement("a")
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
+      link.href = url
+      link.download = `je2050-${stamp}.png`
+      link.click()
       URL.revokeObjectURL(url)
     }, "image/png")
   }

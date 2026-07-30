@@ -54,8 +54,8 @@ function grassValueNoise(px, pz) {
   return (a * (1 - ux) + b * ux) * (1 - uz) + (c * (1 - ux) + d * ux) * uz
 }
 
-function tileHash(tx, tz, idx, layer) {
-  const n = Math.sin(tx * 127.1 + tz * 311.7 + idx * 74.7 + layer * 1731.3) * 43758.5453
+function tileHash(tx, tz, idx, seed) {
+  const n = Math.sin(tx * 127.1 + tz * 311.7 + idx * 74.7 + seed * 1731.3) * 43758.5453
   return n - Math.floor(n)
 }
 
@@ -64,14 +64,14 @@ function cpuHash(x, z) {
   return n - Math.floor(n)
 }
 
-function computeTileBlades(tx, tz, bladeStart, bladeCount, layer) {
+function computeTileBlades(tx, tz, bladeCount, seed) {
   const dynArr = new Float32Array(bladeCount * 6)
   const noiseArr = new Float32Array(bladeCount * 5)
   const worldX = tx * TILE_SIZE
   const worldZ = tz * TILE_SIZE
   for (let b = 0; b < bladeCount; b++) {
-    const x = worldX + tileHash(tx, tz, b * 2, layer) * TILE_SIZE
-    const z = worldZ + tileHash(tx, tz, b * 2 + 1, layer) * TILE_SIZE
+    const x = worldX + tileHash(tx, tz, b * 2, seed) * TILE_SIZE
+    const z = worldZ + tileHash(tx, tz, b * 2 + 1, seed) * TILE_SIZE
     const groundY = sampleHeight(x, z)
     const rollH = cpuHash(x * 17.31 + 0.5, z * 41.77 + 0.5)
     const base = b * 6
@@ -100,8 +100,8 @@ self.onmessage = ({ data }) => {
     return
   }
   if (data.type === "compute") {
-    const { tx, tz, bladeStart, bladeCount, layer } = data
-    const { dynArr, noiseArr } = computeTileBlades(tx, tz, bladeStart, bladeCount, layer)
-    self.postMessage({ bladeStart, layer, dynArr, noiseArr }, [dynArr.buffer, noiseArr.buffer])
+    const { tx, tz, bladeStart, bladeCount, index, seed } = data
+    const { dynArr, noiseArr } = computeTileBlades(tx, tz, bladeCount, seed)
+    self.postMessage({ bladeStart, index, dynArr, noiseArr }, [dynArr.buffer, noiseArr.buffer])
   }
 }

@@ -23,7 +23,6 @@ export class GPUContext {
   /** @type {GPUSampler} */ linearClamp = null
   /** @type {GPUSampler} */ linearRepeat = null
   /** @type {GPUSampler} */ nearestClamp = null
-  /** @type {GPUBuffer} */ frameUniformBuffer = null
 
   // Camera & matrices (Float32Array[16])
   // #####################################
@@ -44,10 +43,6 @@ export class GPUContext {
   // Sun / moon / lighting
   // #####################
   timeInfo = null
-  get sunPosition() {
-    return this.timeInfo?.sunPosition ?? { x: 0, y: 1, z: 0 }
-  }
-  sunScreenSpace = { x: 0, y: 0 }
   sunDirection = [0, 0, 0]
   primaryLightDir = { x: 0, y: 0, z: 0 }
   primaryLightStrength = 1.0
@@ -58,7 +53,6 @@ export class GPUContext {
 
   // Timing
   // ######
-  currentTime = 0
   deltaTime = 0
   // deltaTime scaled by the scene clock's speed (see TimeSystem.timeScale). CPU
   // sim systems (wind, boids, effects) integrate against this so they keep pace
