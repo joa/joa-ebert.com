@@ -48,7 +48,7 @@ Styles are authored in `css/style.css` using Tailwind CSS v4 via the `@tailwindc
 - **`textureSampleLevel` is allowed in non-uniform control flow** (explicit LOD bypasses the restriction). Use it for vertex shader texture reads and cases where you control the LOD.
 - **WGSL struct alignment:** `vec3f` aligns to 16 bytes but has size 12. A `f32` field after a `vec3f` packs into the 4 remaining bytes at offset 12, not at offset 16. `vec2f` aligns to 8 bytes. Always verify byte offsets against the WGSL spec when writing uniform buffers from JS.
 - **`smoothstep(edge0, edge1, x)` with `edge0 > edge1` is indeterminate** (Dawn returns 0, so the whole sprite/mask goes transparent and silently discards). Never write a "reversed" falloff like `smoothstep(1.0, 0.55, r)` for an opaque-center dot — use `1.0 - smoothstep(0.55, 1.0, r)`.
-- **Every bind group slot declared in the pipeline layout must be set** at draw time, even if the group is empty. Use `createEmptyBindGroup()` for unused slots.
+- **Every bind group slot declared in the pipeline layout must be set** at draw time, even if the group is empty. Bind the renderer's `empty` bind group for unused slots.
 - **FrameUniforms (group 0)** is a single 640-byte uniform buffer shared by all passes. The `lightSpaceMatrix` lives at float offset 112 (byte 448). All passes bind the same frame bind group at group 0.
 
 ## Color & Tonemapping Pipeline (gotchas)
@@ -71,11 +71,11 @@ Two non-obvious traps cost a long "why is the sky purple / sun washed out" debug
 | `webgpu-device.js`   | Device/adapter init, canvas config, shared samplers, helper factories                                                                |
 | `webgpu-errors.js`   | `withErrorScopes()` / `reportError()` / `hasError()` — wraps GPU error scope push/pop                                                |
 | `gpu-context.js`     | `GPUContext` — shared per-frame state (matrices, timing, camera, lighting)                                                           |
-| `gpu-pipelines.js`   | All `GPURenderPipeline` objects, bind group layouts, bind group creation                                                             |
-| `gpu-buffers.js`     | Geometry buffers (grass, ground, text, birds, rain, particles, fireflies), fullscreen quad, render target textures, noise textures   |
+| `gpu-pipelines.js`   | Pipelines, bind group layouts and vertex layouts, declared as data tables; `createBindGroup()` helper                                |
+| `gpu-buffers.js`     | Geometry buffers (grass, ground, text, birds, rain, particles, fireflies), render targets, noise textures, `UniformBuffer`           |
 | `gpu-updates.js`     | Per-frame uniform writes (`writeFrameUniforms`), grass tile updates, `GPUHeightmap` readback                                         |
 | `gpu-bake.js`        | One-time bake passes (mountain/ground heightmap), periodic bakes (cloud shadow), CPU helpers (sun visibility, cloud light occlusion) |
-| `uniform-catalog.js` | WGSL struct layouts and byte offsets for all uniform buffers                                                                         |
+| `uniform-catalog.js` | WGSL struct layouts, byte offsets and allocated sizes (`UNIFORM_BYTES`) for every uniform buffer                                     |
 
 WGSL shaders live in `js/webgpu/shaders/` and are bundled via the `wgslShaderBundlePlugin` in `vite.config.js` (injected as a virtual JS module, no minification).
 
@@ -132,13 +132,13 @@ CPU-side flock simulation. 500 (mobile) / 1000 (desktop) birds. Each frame: sepa
 - **Group 0** — frame uniforms (640 bytes, shared by every pass). Created once, updated every frame via `writeFrameUniforms()`.
 - **Group 1** — per-pass resources (textures, samplers, pass-specific uniforms). Each pass has its own bind group layout defined in `gpu-pipelines.js`.
 - **Group 3** — per-object uniforms (e.g. text model matrix). Groups 1–2 may be empty bind groups to pad to group 3.
-- All pipelines are created once at init in `createAllPipelines()`. Bind groups that reference screen-size textures must be recreated on resize via `createPassBindGroups()`.
+- All pipelines are created once at init in `createAllPipelines()`, from the `PASS_ENTRIES` / pipeline spec tables — a new pass is a table row, not new code. Bind groups live in the renderer's `#bg` map: `#createStaticBindGroups()` runs once, `#createScreenBindGroups()` re-runs on every resize (it references screen-size render targets).
 
 **Shadow pass:**
 
 - Depth-only render pass into a 1024×1024 (mobile) / 2048×2048 (desktop) `depth32float` texture.
 - `depthBias: 2`, `depthBiasSlopeScale: 2.0`, `depthBiasClamp: 0.01` on both shadow pipelines.
-- Draws dense grass (instanced), sparse grass (instanced), then text. Same vertex buffer layout as the G-buffer grass pipeline.
+- Draws both grass layers (`grass.layers`, dense first), then text, bike and birds. Same vertex buffer layout as the G-buffer grass pipeline, minus the per-blade noise stream.
 - Light space matrix: orthographic frustum fitted to camera frustum corners (clamped to 40 wu shadow distance), texel-snapped to prevent shimmer, field-clamped to ±60 wu. Returns `null` when sun elevation ≤ 0.05 (no shadows at night).
 - The shadow map is a separate texture from the scene depth — no render/sample conflict.
 
@@ -165,7 +165,9 @@ CPU-side flock simulation. 500 (mobile) / 1000 (desktop) birds. Each frame: sepa
 13. Sky, rain, god ray, fog, post-process uniform writes
 14. **GPU encode:** cloud shadow bake → shadow pass → G-buffer pass → scene pass (deferred lighting + firefly/bike lights + sky + rain + particles + fireflies, all in **one** render pass) → SSAO + blur → bloom (extract → down → up) → god rays → post-process composite → submit
 
-**Render targets (created by `createRenderTargets`):**
+**Uniform buffers:** every one is a `UniformBuffer` (GPU buffer + host staging exposed as `.f` / `.dv`, submitted by `.write()`), allocated from the `UNIFORM_BYTES` table in `uniform-catalog.js` — which documents the matching WGSL struct and byte offsets right above it — and seeded from `UNIFORM_SEED` in `renderer.js`. Adding a uniform means documenting the struct, adding its size, and writing a writer.
+
+**Render targets (created by `createRenderTargets`, each `{ texture, view, width, height }`):**
 
 - `gAlbedo`, `gNormal`, `gDepth` — G-buffer MRT outputs (full-res). Layout, material IDs and the octahedral normal encoding are defined once in `shaders/gbuffer.inc.wgsl`, which every writer and reader `#include`s — change it there, not per shader.
 - `sceneTexture` — HDR scene color (deferred + forward merged, full-res)

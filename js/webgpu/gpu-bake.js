@@ -1,64 +1,40 @@
 import { smoothstep } from "../shared/math-utils.js"
 import { NOISE_TEX_DEPTH, NOISE_TEX_HEIGHT, NOISE_TEX_WIDTH } from "./gpu-buffers.js"
 
-function recordBakePass(encoder, pipeline, view, fullscreenQuad, bindGroup) {
+// Fullscreen quad draw into `view`, used by every bake pipeline.
+export function recordBake(encoder, pipeline, view, fullscreenQuad, bindGroup) {
   const pass = encoder.beginRenderPass({
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
   })
   pass.setPipeline(pipeline)
   if (bindGroup) pass.setBindGroup(0, bindGroup)
-  pass.setVertexBuffer(0, fullscreenQuad.vertices)
-  pass.setVertexBuffer(1, fullscreenQuad.uvs)
+  const streams = fullscreenQuad.streams
+  for (let slot = 0; slot < streams.length; slot++) pass.setVertexBuffer(slot, streams[slot])
   pass.draw(fullscreenQuad.vertexCount)
   pass.end()
 }
 
-function runBakePass(device, pipeline, colorTexture, fullscreenQuad, bindGroup, cachedView) {
+// One-shot bake, submitted on its own command buffer at startup.
+export function bakeOnce(device, pipeline, target, fullscreenQuad, bindGroup) {
   const encoder = device.createCommandEncoder()
-  recordBakePass(encoder, pipeline, cachedView ?? colorTexture.createView(), fullscreenQuad, bindGroup)
+  recordBake(encoder, pipeline, target.createView(), fullscreenQuad, bindGroup)
   device.queue.submit([encoder.finish()])
 }
 
-export function bakeMountainHeightmap(device, pipeline, texture, fullscreenQuad, bindGroup) {
-  runBakePass(device, pipeline, texture, fullscreenQuad, bindGroup)
-}
-
-export function bakeGroundHeightmap(device, pipeline, texture, fullscreenQuad, bindGroup) {
-  runBakePass(device, pipeline, texture, fullscreenQuad, bindGroup)
-}
-
-const CLOUD_SHADOW_UNIFORM_SIZE = 64
-const _cloudShadowData = new Float32Array(CLOUD_SHADOW_UNIFORM_SIZE / 4)
-
-export function createCloudShadowUniformBuffer(device) {
-  return device.createBuffer({
-    size: CLOUD_SHADOW_UNIFORM_SIZE,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  })
-}
-
-export function writeCloudShadowUniforms(device, uniformBuffer, ctx, windUniforms) {
-  // struct CloudShadowBakeUniforms: sunDir(vec3f@0), cloudBase(f32@12),
-  //   cloudCoverage(f32@16), windStrength(f32@20), windDir(vec2f@24), time(f32@32)
-  const d = _cloudShadowData
-  d[0] = ctx.primaryLightDir.x
-  d[1] = ctx.primaryLightDir.y
-  d[2] = ctx.primaryLightDir.z
-  d[3] = ctx.timeInfo.cloudBase
-  d[4] = ctx.timeInfo.cloudCoverage
-  d[5] = windUniforms.windStrength
-  d[6] = windUniforms.windDirection[0]
-  d[7] = windUniforms.windDirection[1]
-  d[8] = ctx.nowSec
-  device.queue.writeBuffer(uniformBuffer, 0, d)
-}
-
-export function bakeCloudShadow(device, pipeline, texture, fullscreenQuad, bindGroup, cachedView) {
-  runBakePass(device, pipeline, texture, fullscreenQuad, bindGroup, cachedView)
-}
-
-export function recordCloudShadowBake(encoder, pipeline, fullscreenQuad, bindGroup, cachedView) {
-  recordBakePass(encoder, pipeline, cachedView, fullscreenQuad, bindGroup)
+// struct CloudShadowBakeUniforms: sunDir(vec3f@0), cloudBase(f32@12),
+//   cloudCoverage(f32@16), windStrength(f32@20), windDir(vec2f@24), time(f32@32)
+export function writeCloudShadowUniforms(uniforms, ctx, windUniforms) {
+  const f = uniforms.f
+  f[0] = ctx.primaryLightDir.x
+  f[1] = ctx.primaryLightDir.y
+  f[2] = ctx.primaryLightDir.z
+  f[3] = ctx.timeInfo.cloudBase
+  f[4] = ctx.timeInfo.cloudCoverage
+  f[5] = windUniforms.windStrength
+  f[6] = windUniforms.windDirection[0]
+  f[7] = windUniforms.windDirection[1]
+  f[8] = ctx.nowSec
+  uniforms.write()
 }
 
 export function computeSunVisibility(sunDir, origin, mountainHeightmap) {

@@ -7,7 +7,7 @@
 
 import { smoothstep } from "../shared/math-utils.js"
 import { BIRD_COUNT } from "../shared/boids-system.js"
-import { TILE_SIZE, TILES_X, BLADES_SPARSE, DENSE_X, BLADES_DENSE } from "./gpu-buffers.js"
+import { TILE_SIZE } from "./gpu-buffers.js"
 
 // Grass Tile Worker
 // #################
@@ -37,7 +37,8 @@ export class GrassTileWorker {
     }
   }
 
-  #dispatchLayer(coords, camX, camZ, gridSize, bladeCount, layer) {
+  #dispatchLayer(layer, index, camX, camZ) {
+    const { tileCoords, gridSize, bladesPerTile, seed } = layer
     const half = (gridSize / 2) | 0
     const anchorTX = (Math.floor(camX / TILE_SIZE) - half) | 0
     const anchorTZ = (Math.floor(camZ / TILE_SIZE) - half) | 0
@@ -48,16 +49,17 @@ export class GrassTileWorker {
         const slotX = ((tx % gridSize) + gridSize) % gridSize
         const slotZ = ((tz % gridSize) + gridSize) % gridSize
         const slot = slotZ * gridSize + slotX
-        if (coords[slot * 2] === tx && coords[slot * 2 + 1] === tz) continue
-        coords[slot * 2] = tx
-        coords[slot * 2 + 1] = tz
+        if (tileCoords[slot * 2] === tx && tileCoords[slot * 2 + 1] === tz) continue
+        tileCoords[slot * 2] = tx
+        tileCoords[slot * 2 + 1] = tz
         this.#workers[this.#index++].postMessage({
           type: "compute",
           tx,
           tz,
-          bladeStart: slot * bladeCount,
-          bladeCount,
-          layer,
+          bladeStart: slot * bladesPerTile,
+          bladeCount: bladesPerTile,
+          index,
+          seed,
         })
         if (this.#index === this.#workers.length) this.#index = 0
       }
@@ -66,44 +68,31 @@ export class GrassTileWorker {
 
   dispatch(grass, cameraPosition) {
     const [camX, , camZ] = cameraPosition
-    this.#dispatchLayer(grass.tileCoords, camX, camZ, TILES_X, BLADES_SPARSE, 0)
-    this.#dispatchLayer(grass.denseTileCoords, camX, camZ, DENSE_X, BLADES_DENSE, 1)
+    grass.layers.forEach((layer, index) => this.#dispatchLayer(layer, index, camX, camZ))
   }
 
-  invalidate(grass, cameraPosition) {
-    grass.tileCoords.fill(0x7fffffff)
-    grass.denseTileCoords.fill(0x7fffffff)
-    this.dispatch(grass, cameraPosition)
-  }
-
+  // Computed tiles land in the CPU mirrors, then one writeBuffer per stream
+  // covers the dirty span — tiles arriving together are usually contiguous.
   flush(queue, grass) {
     if (!this.#pending.length) return
-    const ext = [
-      { min: Infinity, max: -Infinity, nMin: Infinity, nMax: -Infinity },
-      { min: Infinity, max: -Infinity, nMin: Infinity, nMax: -Infinity },
-    ]
-    const cpuDyn = [grass.sparseDynamicCPU, grass.denseDynamicCPU]
-    const cpuNoise = [grass.sparseNoiseCPU, grass.denseNoiseCPU]
-    for (const { bladeStart, layer, dynArr, noiseArr } of this.#pending) {
-      const e = ext[layer]
-      cpuDyn[layer].set(dynArr, bladeStart * 6)
-      cpuNoise[layer].set(noiseArr, bladeStart * 5)
-      const b = bladeStart * 24,
-        nb = bladeStart * 20
-      if (b < e.min) e.min = b
-      if (b + dynArr.byteLength > e.max) e.max = b + dynArr.byteLength
-      if (nb < e.nMin) e.nMin = nb
-      if (nb + noiseArr.byteLength > e.nMax) e.nMax = nb + noiseArr.byteLength
+    const spans = grass.layers.map(() => ({ dynMin: Infinity, dynMax: -Infinity, noiseMin: Infinity, noiseMax: -Infinity })) // prettier-ignore
+    for (const { bladeStart, index, dynArr, noiseArr } of this.#pending) {
+      const layer = grass.layers[index]
+      const span = spans[index]
+      layer.dynamicCPU.set(dynArr, bladeStart * 6)
+      layer.noiseCPU.set(noiseArr, bladeStart * 5)
+      span.dynMin = Math.min(span.dynMin, bladeStart * 24)
+      span.dynMax = Math.max(span.dynMax, bladeStart * 24 + dynArr.byteLength)
+      span.noiseMin = Math.min(span.noiseMin, bladeStart * 20)
+      span.noiseMax = Math.max(span.noiseMax, bladeStart * 20 + noiseArr.byteLength)
     }
     this.#pending.length = 0
-    const gpuDyn = [grass.sparseDynamic, grass.denseDynamic]
-    const gpuNoise = [grass.sparseNoise, grass.denseNoise]
-    for (let l = 0; l < 2; l++) {
-      const e = ext[l]
-      if (e.min < e.max) {
-        queue.writeBuffer(gpuDyn[l], e.min, cpuDyn[l].buffer, e.min, e.max - e.min)
-        queue.writeBuffer(gpuNoise[l], e.nMin, cpuNoise[l].buffer, e.nMin, e.nMax - e.nMin)
-      }
+    for (let i = 0; i < grass.layers.length; i++) {
+      const layer = grass.layers[i]
+      const { dynMin, dynMax, noiseMin, noiseMax } = spans[i]
+      if (dynMin >= dynMax) continue
+      queue.writeBuffer(layer.dynamic, dynMin, layer.dynamicCPU.buffer, dynMin, dynMax - dynMin)
+      queue.writeBuffer(layer.noise, noiseMin, layer.noiseCPU.buffer, noiseMin, noiseMax - noiseMin)
     }
   }
 }
@@ -149,8 +138,8 @@ export function updateBirdInstances(queue, birds, boids) {
 // Per-frame Uniform Buffer Update
 // ###############################
 
-export function writeFrameUniforms(queue, buffer, ctx, windSystem, prevViewProjectionMatrix, data) {
-  if (!data) data = new Float32Array(640 / 4)
+export function writeFrameUniforms(uniforms, ctx, windSystem, prevViewProjectionMatrix) {
+  const data = uniforms.f
   data.set(ctx.projectionMatrix, 0)
   data.set(ctx.viewMatrix, 16)
   data.set(ctx.invProjectionMatrix, 32)
@@ -209,7 +198,7 @@ export function writeFrameUniforms(queue, buffer, ctx, windSystem, prevViewProje
   data[149] = cursor[1]
   data[150] = cursor[2]
   data[151] = ctx.cursorActive
-  queue.writeBuffer(buffer, 0, data)
+  uniforms.write()
 }
 
 // Heightmap GPU→CPU Readback
@@ -260,10 +249,6 @@ export class GPUHeightmap {
   async readback(device, texture) {
     this.texture = texture
     this.#data = await readbackTexture(device, texture, this.#size, this.#size)
-  }
-
-  sample(x, z, scale = 1.0) {
-    return (this.#data[(z * this.#size + x) << 2] / 0xff) * scale
   }
 
   sampleBilinear(x, z, scale = 1.0) {
