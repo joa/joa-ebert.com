@@ -110,7 +110,10 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     let sampleCoord = vec2i(vec2f(depthDims) * suv);
     let depth = textureLoad(depthTexture, sampleCoord, 0);
     let sceneCoord = vec2i(vec2f(sceneDims) * suv);
-    let sceneColor = textureLoad(sceneTexture, clamp(sceneCoord, vec2i(0), vec2i(sceneDims) - 1), 0).rgb;
+    // The scene buffer is HDR — the sun disc reaches ~14×. This accumulator was
+    // tuned against a 1.5-clamped scene and writes to an rgba8unorm target, so
+    // cap the tap at the old ceiling to keep shaft energy stable.
+    let sceneColor = min(textureLoad(sceneTexture, clamp(sceneCoord, vec2i(0), vec2i(sceneDims) - 1), 0).rgb, vec3f(1.5));
 
     let lum = dot(sceneColor, vec3f(0.2126, 0.7152, 0.0722));
     // Only the bright sky/sun emits light shafts; solid geometry (grass, text)
