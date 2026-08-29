@@ -93,7 +93,7 @@ shader already computes — the far meadow reads as a calm, coherent surface. On
 
 ## Part 2 — Performance
 
-### 2.1 Grass vertex work: LOD the blade mesh per layer (biggest win, low risk)
+### 2.1 Grass vertex work: LOD the blade mesh per layer (biggest win, low risk) — DONE
 
 1M blades × 8 segments, drawn twice (G-buffer + shadow). Both layers share one blade mesh, but the
 sparse layer is by definition the distant field (blades widened 2×, a few pixels tall).
@@ -106,10 +106,17 @@ sparse layer is by definition the distant field (blades widened 2×, a few pixel
   distance width scale-up.
 - Skip sparse-layer tiles fully under the dense layer's 11×11 footprint (double-drawn today).
 
-### 2.2 Shadow pass diet
+### 2.2 Shadow pass diet — DONE (segment LOD part)
 
-2-segment blade mesh for grass shadows (a 2048² map does not resolve 8 segments); consider letting
-adaptive quality thin dense-layer shadow density once segment LOD is in.
+Coarse blade mesh for grass shadows (a 2048² map does not resolve 8 segments); consider letting
+adaptive quality thin dense-layer shadow density once segment LOD is in (still open).
+
+Implementation notes for 2.1/2.2: blade meshes are now per-LOD (`meshFull`/`meshSparse`/
+`meshShadow`, 8/4/3 segments desktop, 6/3/2 low-spec); the culler splits the distant layer's
+visible tiles at `grassLodDistance` (default 18 wu) into near/far run lists and far tiles draw a
+`grassDistantDensity` prefix (default 0.65); distant-layer tiles covered by a streamed-in dense
+tile are dropped in both camera and shadow passes (`grassDedup`). All three are live controls for
+A/B toggling in the debug panel.
 
 ### 2.3 Render-scale as an adaptive-quality lever (biggest mobile/4K win)
 
@@ -150,7 +157,7 @@ half-res failure mode (scanlines, 2026-07-07) — leave it; render-scale shrinks
 | ---- | ---------------------------------------------------------------- | ------ | -------- | ------ |
 | 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done   |
 | 2    | Ground material restore (§1.3)                                   | S      | fidelity | done   |
-| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     |        |
+| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done   |
 | 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity |        |
 | 5    | Tonemap-aware FXAA, per-frame Poisson rotation (§1.5, §1.6)      | S      | fidelity |        |
 | 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     |        |

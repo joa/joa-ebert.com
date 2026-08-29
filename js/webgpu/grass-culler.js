@@ -40,6 +40,9 @@ export class GrassCuller {
   // Merged visible-slot runs per grass layer, as [firstSlot, slotCount] pairs.
   ranges = []
   rangeCounts = []
+  // Distant-layer slots past the LOD distance — drawn at reduced density.
+  farRanges = []
+  farRangeCounts = []
 
   // Gribb & Hartmann 2001, "Fast Extraction of Viewing Frustum Planes from the
   // World-View-Projection Matrix". WebGPU clip z ∈ [0,1], so the near plane is
@@ -89,57 +92,125 @@ export class GrassCuller {
     p[23] = r4w - r3w
   }
 
-  #cullLayer(coords, slotCount, inflateWu, maxYWu, out) {
+  // Does the dense layer currently map world tile (tx, tz)? Its ring buffer
+  // assigns each tile a fixed slot by coordinate modulo, so one lookup answers
+  // both "inside the dense footprint" and "already streamed in".
+  #denseCovers(dense, tx, tz) {
+    const g = dense.gridSize
+    const sx = ((tx % g) + g) % g
+    const sz = ((tz % g) + g) % g
+    const slot = (sz * g + sx) * 2
+    return dense.tileCoords[slot] === tx && dense.tileCoords[slot + 1] === tz
+  }
+
+  // Emits near runs into out and (when farSq > 0) far runs into farOut; a run
+  // breaks when visibility or the near/far class changes, so both stay merged
+  // [firstSlot, slotCount] pairs over the same slot order.
+  #cullLayer(i, coords, slotCount, inflateWu, maxYWu, coveredBy, camX, camZ, farSq) {
     const planes = this.#planes
-    let rangeCount = 0
+    const out = this.ranges[i]
+    const farOut = this.farRanges[i]
+    let count = 0
+    let farCount = 0
     let runStart = -1
+    let runFar = false
     for (let s = 0; s < slotCount; s++) {
       const tx = coords[s * 2]
       let visible = true
+      let far = false
       if (tx !== TILE_UNSET) {
         const tz = coords[s * 2 + 1]
-        const minX = tx * TILE_SIZE - inflateWu
-        const minZ = tz * TILE_SIZE - inflateWu
-        visible = aabbVisible(
-          planes,
-          minX,
-          -0.5,
-          minZ,
-          minX + TILE_SIZE + 2 * inflateWu,
-          maxYWu,
-          minZ + TILE_SIZE + 2 * inflateWu
-        )
+        if (coveredBy !== null && this.#denseCovers(coveredBy, tx, tz)) {
+          visible = false
+        } else {
+          const minX = tx * TILE_SIZE - inflateWu
+          const minZ = tz * TILE_SIZE - inflateWu
+          visible = aabbVisible(
+            planes,
+            minX,
+            -0.5,
+            minZ,
+            minX + TILE_SIZE + 2 * inflateWu,
+            maxYWu,
+            minZ + TILE_SIZE + 2 * inflateWu
+          )
+          if (visible && farSq > 0) {
+            const dx = (tx + 0.5) * TILE_SIZE - camX
+            const dz = (tz + 0.5) * TILE_SIZE - camZ
+            far = dx * dx + dz * dz > farSq
+          }
+        }
       }
-      if (visible) {
-        if (runStart < 0) runStart = s
-      } else if (runStart >= 0) {
-        out[rangeCount * 2] = runStart
-        out[rangeCount * 2 + 1] = s - runStart
-        rangeCount++
+      const breakRun = runStart >= 0 && (!visible || far !== runFar)
+      if (breakRun) {
+        if (runFar) {
+          farOut[farCount * 2] = runStart
+          farOut[farCount * 2 + 1] = s - runStart
+          farCount++
+        } else {
+          out[count * 2] = runStart
+          out[count * 2 + 1] = s - runStart
+          count++
+        }
         runStart = -1
+      }
+      if (visible && runStart < 0) {
+        runStart = s
+        runFar = far
       }
     }
     if (runStart >= 0) {
-      out[rangeCount * 2] = runStart
-      out[rangeCount * 2 + 1] = slotCount - runStart
-      rangeCount++
+      if (runFar) {
+        farOut[farCount * 2] = runStart
+        farOut[farCount * 2 + 1] = slotCount - runStart
+        farCount++
+      } else {
+        out[count * 2] = runStart
+        out[count * 2 + 1] = slotCount - runStart
+        count++
+      }
     }
-    return rangeCount
+    this.rangeCounts[i] = count
+    this.farRangeCounts[i] = farCount
   }
 
   // Cull both grass layers against the clip volume of `viewProjection`.
   // Tile AABBs are inflated for wind sway, cursor push, and blade lean, with
   // the height bound derived from the live grassHeightFactor (controls max 8).
-  cull(viewProjection, grass, grassHeightFactor) {
+  //
+  // `view` (camera pass; shadow passes dedup only) refines the distant layer:
+  //   camX/camZ + lodDistanceWu — tiles whose centre lies beyond the LOD
+  //     distance land in farRanges, drawn at reduced density;
+  //   dedup — tiles already covered by a streamed-in dense tile are dropped
+  //     (the dense field draws ~7× more blades there, in both passes).
+  cull(viewProjection, grass, grassHeightFactor, view = null) {
     this.#extractPlanes(viewProjection)
     const bladeMaxWu = MAX_BLADE_WU * Math.max(1, grassHeightFactor)
     const maxYWu = GROUND_MAX_WU + bladeMaxWu
     const inflateWu = 1.0 + 0.5 * bladeMaxWu
-    if (!this.ranges.length) this.ranges = grass.layers.map(layer => new Int32Array(layer.tileCoords.length))
+    if (!this.ranges.length) {
+      this.ranges = grass.layers.map(layer => new Int32Array(layer.tileCoords.length))
+      this.farRanges = grass.layers.map(layer => new Int32Array(layer.tileCoords.length))
+    }
+    let dense = null
+    if (view?.dedup) {
+      for (let i = 0; i < grass.layers.length; i++) if (!grass.layers[i].distant) dense = grass.layers[i]
+    }
     for (let i = 0; i < grass.layers.length; i++) {
       const layer = grass.layers[i]
       const slotCount = layer.gridSize * layer.gridSize
-      this.rangeCounts[i] = this.#cullLayer(layer.tileCoords, slotCount, inflateWu, maxYWu, this.ranges[i])
+      const lodWu = layer.distant && view ? (view.lodDistanceWu ?? 0) : 0
+      this.#cullLayer(
+        i,
+        layer.tileCoords,
+        slotCount,
+        inflateWu,
+        maxYWu,
+        layer.distant ? dense : null,
+        view?.camX ?? 0,
+        view?.camZ ?? 0,
+        lodWu * lodWu
+      )
     }
   }
 }

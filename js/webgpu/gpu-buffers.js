@@ -23,6 +23,11 @@ export const BLADE_COUNT = S.lowSpecTBDR ? 400000 : 1000000
 export const BLADE_HEIGHT = 0.3
 export const BLADE_WIDTH = 0.015
 export const BLADE_SEGMENTS = S.lowSpec ? 6 : 8
+// Blade mesh LODs. Distant-field blades are widened 2× and stand a few pixels
+// tall, and the shadow map resolves silhouettes even less — neither can show a
+// full-segment Bézier curve, so coarser strips halve their vertex + curve work.
+export const SPARSE_SEGMENTS = S.lowSpec ? 3 : 4
+export const SHADOW_SEGMENTS = S.lowSpec ? 2 : 3
 export const TILE_SIZE = 2.0
 export const TILES_X = Math.ceil((2 * AREA_SIZE) / TILE_SIZE)
 export const NUM_TILES = TILES_X * TILES_X
@@ -88,22 +93,33 @@ function buildGrassLayer(gpu, { seed, gridSize, bladesPerTile, distant = false }
   }
 }
 
-export function initGrassBuffers(gpu) {
-  const vertCount = (BLADE_SEGMENTS + 1) * 2
-  const bladeVertices = new Float32Array(vertCount * 3)
-  const bladeTexCoords = new Float32Array(vertCount * 2)
-  for (let i = 0; i <= BLADE_SEGMENTS; i++) {
-    const t = i / BLADE_SEGMENTS
+// One blade mesh at the given segment count: a vertical quad strip whose vertex
+// t ∈ [0, 1] drives the Bézier curve in the vertex shader. All LODs share the
+// same vertex layout, so every grass pipeline accepts any of them.
+function buildBladeMesh(gpu, segments) {
+  const vertCount = (segments + 1) * 2
+  const vertices = new Float32Array(vertCount * 3)
+  const texCoords = new Float32Array(vertCount * 2)
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments
     const b = i * 2
-    bladeVertices.set([0, t, 0, 1, t, 0], b * 3)
-    bladeTexCoords.set([0, t, 1, t], b * 2)
+    vertices.set([0, t, 0, 1, t, 0], b * 3)
+    texCoords.set([0, t, 1, t], b * 2)
   }
-  const bladeIndices = new Uint16Array(BLADE_SEGMENTS * 6)
-  for (let i = 0; i < BLADE_SEGMENTS; i++) {
+  const indices = new Uint16Array(segments * 6)
+  for (let i = 0; i < segments; i++) {
     const b = i * 2
-    bladeIndices.set([b, b + 1, b + 2, b + 1, b + 3, b + 2], i * 6)
+    indices.set([b, b + 1, b + 2, b + 1, b + 3, b + 2], i * 6)
   }
+  return {
+    vertices: gpu.createBuffer(vertices, GPUBufferUsage.VERTEX),
+    texCoords: gpu.createBuffer(texCoords, GPUBufferUsage.VERTEX),
+    indices: gpu.createBuffer(indices, GPUBufferUsage.INDEX),
+    indexCount: indices.length,
+  }
+}
 
+export function initGrassBuffers(gpu) {
   const sparse = buildGrassLayer(gpu, {
     seed: 0,
     gridSize: TILES_X,
@@ -113,10 +129,9 @@ export function initGrassBuffers(gpu) {
   const dense = buildGrassLayer(gpu, { seed: 1, gridSize: DENSE_X, bladesPerTile: BLADES_DENSE })
 
   return {
-    bladeVertices: gpu.createBuffer(bladeVertices, GPUBufferUsage.VERTEX),
-    bladeTexCoords: gpu.createBuffer(bladeTexCoords, GPUBufferUsage.VERTEX),
-    bladeIndices: gpu.createBuffer(bladeIndices, GPUBufferUsage.INDEX),
-    bladeIndexCount: bladeIndices.length,
+    meshFull: buildBladeMesh(gpu, BLADE_SEGMENTS),
+    meshSparse: buildBladeMesh(gpu, SPARSE_SEGMENTS),
+    meshShadow: buildBladeMesh(gpu, SHADOW_SEGMENTS),
     // Dense first: it covers the near field, so it primes depth for the sparse draw.
     layers: [dense, sparse],
   }

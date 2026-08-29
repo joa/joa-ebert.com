@@ -262,6 +262,10 @@ export class Renderer {
   #viewCuller = new GrassCuller()
   #shadowCuller = new GrassCuller()
   #grassCullingEnabled = false
+  // Reused cull refinement options — the render loop must not allocate. The
+  // shadow volume gets no LOD split (lodDistanceWu 0), only the dedup flag.
+  #viewCullOpts = { camX: 0, camZ: 0, lodDistanceWu: 0, dedup: true }
+  #shadowCullOpts = { camX: 0, camZ: 0, lodDistanceWu: 0, dedup: true }
 
   // Calendar event modules — populated in init(), empty outside active date ranges
   #eventModules = []
@@ -1224,27 +1228,36 @@ export class Renderer {
     }
   }
 
-  // Both grass fields, sharing the blade mesh. `withNoise` adds the per-blade
-  // noise stream the G-buffer pass needs; the shadow pass omits it.
-  #drawGrass(pass, culler, withNoise, distantDensity = 1) {
+  // Both grass fields. Each draw picks a blade mesh LOD: the dense near field
+  // keeps the full-segment curve, while the distant layer and the shadow pass
+  // use coarser strips their on-screen (or in-map) size cannot distinguish.
+  // `withNoise` adds the per-blade noise stream the G-buffer pass needs; the
+  // shadow pass omits it. `farDensity` further thins the distant layer's
+  // beyond-LOD-distance tiles (the culler's farRanges, camera pass only).
+  #drawGrass(pass, culler, withNoise, distantDensity = 1, farDensity = 1) {
     const grass = this.#geo.grass
-    pass.setVertexBuffer(0, grass.bladeVertices)
-    pass.setVertexBuffer(1, grass.bladeTexCoords)
-    pass.setIndexBuffer(grass.bladeIndices, "uint16")
     for (let i = 0; i < grass.layers.length; i++) {
       const layer = grass.layers[i]
+      const mesh = withNoise ? (layer.distant ? grass.meshSparse : grass.meshFull) : grass.meshShadow
+      pass.setVertexBuffer(0, mesh.vertices)
+      pass.setVertexBuffer(1, mesh.texCoords)
+      pass.setIndexBuffer(mesh.indices, "uint16")
       pass.setVertexBuffer(2, layer.dynamic)
       pass.setVertexBuffer(3, layer.attribs)
       if (withNoise) pass.setVertexBuffer(4, layer.noise)
       if (!culler) {
-        pass.drawIndexed(grass.bladeIndexCount, layer.bladeCount)
+        pass.drawIndexed(mesh.indexCount, layer.bladeCount)
         continue
       }
       // Distant blades are sub-texel in the shadow map — adaptive quality thins
       // them via shadowGrassDensity without visible shadow change.
       const density = layer.distant ? distantDensity : 1
       const count = culler.rangeCounts[i]
-      this.#drawGrassRanges(pass, grass.bladeIndexCount, layer.bladesPerTile, culler.ranges[i], count, density)
+      this.#drawGrassRanges(pass, mesh.indexCount, layer.bladesPerTile, culler.ranges[i], count, density)
+      const farCount = culler.farRangeCounts[i]
+      if (farCount > 0) {
+        this.#drawGrassRanges(pass, mesh.indexCount, layer.bladesPerTile, culler.farRanges[i], farCount, density * farDensity) // prettier-ignore
+      }
     }
   }
 
@@ -1322,7 +1335,7 @@ export class Renderer {
     if (this.#geo.grass) {
       pass.setPipeline(this.#pipelines.grass)
       pass.setBindGroup(1, this.#bg.grass)
-      this.#drawGrass(pass, this.#activeCuller(this.#viewCuller), true)
+      this.#drawGrass(pass, this.#activeCuller(this.#viewCuller), true, 1, ctx.timeInfo?.grassDistantDensity ?? 1)
     }
 
     const flowers = this.#geo.flower
@@ -1666,8 +1679,17 @@ export class Renderer {
     this.#grassCullingEnabled = (timeInfo.grassCulling ?? 1) > 0.5 && !!this.#geo.grass
     if (this.#grassCullingEnabled) {
       const heightFactor = timeInfo.grassHeightFactor ?? 1
-      this.#viewCuller.cull(ctx.viewProjectionMatrix, this.#geo.grass, heightFactor)
-      if (ctx.lightSpaceMatrix) this.#shadowCuller.cull(ctx.lightSpaceMatrix, this.#geo.grass, heightFactor)
+      const cp = ctx.cameraPosition
+      const view = this.#viewCullOpts
+      view.camX = cp[0]
+      view.camZ = cp[2]
+      view.lodDistanceWu = timeInfo.grassLodDistance ?? 18
+      view.dedup = (timeInfo.grassDedup ?? 1) > 0.5
+      this.#shadowCullOpts.dedup = view.dedup
+      this.#viewCuller.cull(ctx.viewProjectionMatrix, this.#geo.grass, heightFactor, view)
+      if (ctx.lightSpaceMatrix) {
+        this.#shadowCuller.cull(ctx.lightSpaceMatrix, this.#geo.grass, heightFactor, this.#shadowCullOpts)
+      }
     }
 
     const mouseRay = this.#computeMouseRay(ctx)
