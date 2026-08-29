@@ -111,7 +111,7 @@ fn bumpGrad(p: vec2f) -> vec2f {
   return vec2f(h0 - hR, h0 - hU) * (1.0 / e * 0.60);
 }
 
-/*@fragment
+@fragment
 fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let xz = input.worldPos.xz;
 
@@ -135,20 +135,16 @@ fn fragmentMain(input: VertexOutput) -> GBufferOutput {
   let dryN = valueNoise(xz * 4.6 + vec2f(3.17, 1.89));
   base = mix(base, dry, smoothstep(0.70, 0.88, dryN) * 0.28);
 
+  // Thin exposed-soil seams where both noises dip low. The noise product averages
+  // ~0.25, so gating on it staying *under* the band keeps seams rare — the
+  // un-negated form selected nearly every pixel and painted the whole ground soil.
   let seam = valueNoise(xz * 1.9 + vec2f(7.1, 2.3)) * valueNoise(xz * 3.6 + vec2f(1.5, 4.7));
-  let soilMask = smoothstep(0.06, 0.09, seam);
+  let soilMask = 1.0 - smoothstep(0.06, 0.09, seam);
   base = mix(base, soil, soilMask);
 
   let bg = bumpGrad(xz);
   let bumpN = normalize(input.normal + vec3f(-bg.x * 0.55, 0.0, -bg.y * 0.55));
-  let creviceAO = mix(0.76, 1.0, soilMask);
+  let creviceAO = mix(1.0, 0.76, soilMask);
 
   return encodeGBuffer(base, MAT_GROUND, bumpN, vec2f(creviceAO, 0.0), input.position.z);
-}*/
-
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> GBufferOutput {
-  let soil = mix(vec3f(0.11, 0.19, 0.07), vec3f(0.18, 0.13, 0.07), 0.2);
-  return encodeGBuffer(soil, MAT_GROUND, input.normal, vec2f(1.0, 0.0), input.position.z);
 }
