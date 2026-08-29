@@ -70,6 +70,10 @@ const MOON_RADIUS: f32 = 0.03162;
 const NOISE_WRAP: f32 = 32.0;
 const NOISE_WRAP_SCALE: vec3f = vec3f(NOISE_WRAP, NOISE_WRAP, NOISE_WRAP); // note: allows us to stretch clouds visually
 const CLOUD_OVERSHOOT: f32 = 0.2; // clouds spill this fraction of slab height past the base/top planes so the boundary isn't a flat wall
+// Output ceiling for the HDR scene buffer. AgX in postprocess maps up to EV +4
+// (2^4.026 ≈ 16.3), so 16 lets the ~14× sun disc reach the tonemapper as intended
+// while still guarding against runaway values. Must stay ≥ the sun disc drive.
+const HDR_CEIL: f32 = 16.0;
 
 struct SkyVertexOutput {
   @builtin(position) position: vec4f,
@@ -663,7 +667,7 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
   // Output is bit-identical to compositing mountains after the other layers.
   let mountains = renderMountains(frame.cameraPosition, dir, frame.sunDirection);
   if (mountains.a == 1.0) {
-    return vec4f(clamp(mountains.rgb, vec3f(0.0), vec3f(1.5)), 1.0);
+    return vec4f(clamp(mountains.rgb, vec3f(0.0), vec3f(HDR_CEIL)), 1.0);
   }
 
   var color = atmosphere(dir);
@@ -722,5 +726,5 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
   let clouds = renderClouds(frame.cameraPosition, dir, frame.sunDirection, frame.sunDirection.y, input.texCoord);
   color = mix(color, clouds.rgb, clouds.a);
 
-  return vec4f(clamp(color, vec3f(0.0), vec3f(1.5)), 1.0);
+  return vec4f(clamp(color, vec3f(0.0), vec3f(HDR_CEIL)), 1.0);
 }

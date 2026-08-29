@@ -80,6 +80,12 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> FullscreenVertexOutput
 const PI: f32 = 3.14159265;
 const SHADOW_SAMPLES: i32 = 16;
 const SHADOW_RADIUS: f32 = 2.5;
+// The scene buffer is HDR (rgba16float) and AgX in postprocess maps up to EV +4
+// (2^4.026 ≈ 16.3). An upper clamp at 1.0 here silently made every lit surface
+// LDR: no specular or rim highlight could cross the bloom threshold, and AgX's
+// highlight desaturation never engaged on geometry. The GGX term's min(…, 8.0)
+// stays the specular firefly guard; this only catches runaway sums.
+const HDR_CEIL: f32 = 16.0;
 
 const POISSON_DISK = array<vec2f, 16>(
   vec2f(-0.94201624, -0.39906216),
@@ -441,5 +447,5 @@ fn fragmentMain(input: FullscreenVertexOutput) -> @location(0) vec4f {
     }
   }
 
-  return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
+  return vec4f(clamp(color, vec3f(0.0), vec3f(HDR_CEIL)), 1.0);
 }
