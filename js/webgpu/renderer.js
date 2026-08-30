@@ -238,6 +238,7 @@ export class Renderer {
   // ###########################
   #lightingFrame = 0
   #ssaoFrame = 0
+  #appliedRenderScale = 1
   #cloudShadowFrame = 0
   #cloudShadowThisFrame = false
   #cloudSunOcclusion = 1.0
@@ -618,24 +619,35 @@ export class Renderer {
     if (width === canvas.width && height === canvas.height) return
     canvas.width = width
     canvas.height = height
+    this.#applyRenderSize()
+  }
 
+  // Sizes every internal target at renderScale × canvas. The swapchain keeps
+  // the full canvas resolution — the post-process pass samples the smaller
+  // targets with normalized UVs, so the final composite doubles as the
+  // upsample. Recreating the targets is a resize-class hitch; AdaptiveQuality
+  // therefore moves the scale rarely and hysteretically.
+  #applyRenderSize() {
+    const canvas = this.canvas
     const ctx = this.#ctx
-    ctx.width = width
-    ctx.height = height
+    ctx.width = Math.max(1, Math.round(canvas.width * this.#appliedRenderScale))
+    ctx.height = Math.max(1, Math.round(canvas.height * this.#appliedRenderScale))
     const fovRad = (this.#mode === "full" ? FOV_FULL_DEG : FOV_COMPACT_DEG) * DEG_TO_RAD
     ctx.fov = fovRad
-    ctx.aspect = width / height
+    // Aspect from the canvas, not the rounded render size, so the projection is
+    // identical at every scale and a scale change cannot shift the framing.
+    ctx.aspect = canvas.width / canvas.height
     ctx.projectionMatrix = perspectiveMatrixWebGPU(fovRad, ctx.aspect, NEAR, FAR)
     ctx.invProjectionMatrix = invertMatrix4(ctx.projectionMatrix)
 
     ctx.depthTexture?.destroy()
-    ctx.depthTexture = this.#gpu.createDepthTexture(width, height, "depth24plus")
+    ctx.depthTexture = this.#gpu.createDepthTexture(ctx.width, ctx.height, "depth24plus")
     ctx.depthView = ctx.depthTexture.createView({ label: "depth attachment view" })
     ctx.depthSampleView = ctx.depthTexture.createView({ label: "depth sample view", aspect: "depth-only" })
 
     if (this.#renderTargets) {
       destroyRenderTargets(this.#renderTargets)
-      this.#renderTargets = createRenderTargets(this.#gpu, width, height)
+      this.#renderTargets = createRenderTargets(this.#gpu, ctx.width, ctx.height)
       this.#createScreenBindGroups()
       this.#clearPostProcessTargets()
     }
@@ -1604,6 +1616,15 @@ export class Renderer {
       timeInfo = this.adaptiveQuality.apply(timeInfo)
     }
     ctx.timeInfo = timeInfo
+
+    // Internal render scale — adaptive quality's last rung, or a manual
+    // override. Applying it rebuilds the render targets, so act only on real
+    // changes (which the ladder's dwell + hysteresis already keep rare).
+    const scale = Math.min(1, Math.max(0.5, timeInfo.renderScale ?? 1))
+    if (this.#renderTargets && Math.abs(scale - this.#appliedRenderScale) > 0.001) {
+      this.#appliedRenderScale = scale
+      this.#applyRenderSize()
+    }
     return timeInfo
   }
 

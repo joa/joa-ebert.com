@@ -711,6 +711,7 @@ export class TimeSystem {
     p.grassLodDistance = L(kA.grassLodDistance, kB.grassLodDistance, 18.0)
     p.grassDistantDensity = L(kA.grassDistantDensity, kB.grassDistantDensity, 0.65)
     p.grassDedup = L(kA.grassDedup, kB.grassDedup, 1.0)
+    p.renderScale = L(kA.renderScale, kB.renderScale, 1.0)
     p.dewAmount = L(kA.dewAmount, kB.dewAmount, 0.0)
     p.respiratoryRate = L(kA.respiratoryRate, kB.respiratoryRate, respiratoryRate)
     p.heartRate = L(kA.heartRate, kB.heartRate, heartRate)
