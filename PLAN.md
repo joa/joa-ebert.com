@@ -140,7 +140,7 @@ after step counts bottom out (q < 0.25 / 0.12), with dwell times so target rebui
 rebuild machinery already exists. Ship as the last rung below current minimums so desktop never
 sees it but a struggling phone drops resolution before dropping clouds to 6 steps.
 
-### 2.4 Bake the mountains to a panorama
+### 2.4 Bake the mountains to a panorama — DONE
 
 `renderMountains` marches up to 64 heightmap samples + 8 refinements per horizon-band pixel every
 frame, but its inputs (camera ~static, sun slow) barely change. Bake color + alpha + a depth proxy
@@ -176,7 +176,7 @@ half-res failure mode (scanlines, 2026-07-07) — leave it; render-scale shrinks
 | 5    | Tonemap-aware FXAA (§1.5); Poisson rotation moved to TAA step    | S      | fidelity | done   |
 | 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     | done   |
 | 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity | done   |
-| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     |        |
+| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     | done   |
 | 9    | TAA prototype behind a flag (§1.5)                               | L      | both     |        |
 | 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity |        |
 
