@@ -619,6 +619,21 @@ export function createCloudShadowTexture(gpu) {
   return gpu.createRenderTarget(256, 256, "r8unorm")
 }
 
+// Mountain Panorama (lat-long strip, re-baked when sun/camera/atmosphere move)
+// ###########################################################################
+//
+// rgb = premultiplied mountain colour, a = hit mask. HDR mountain colour can
+// pass 1.0 at golden hour, so desktop keeps a float format; low-spec's whole
+// scene is rgba8unorm anyway.
+
+export const MOUNTAIN_PANO_FORMAT = S.lowSpec ? "rgba8unorm" : "rgba16float"
+
+export function createMountainPano(gpu) {
+  const width = S.lowSpec ? 1536 : 4096
+  const height = S.lowSpec ? 384 : 768
+  return gpu.createRenderTarget(width, height, MOUNTAIN_PANO_FORMAT)
+}
+
 // Mountain Heightmap (1024x1024, GPU-baked, CPU-readable)
 // #######################################################
 

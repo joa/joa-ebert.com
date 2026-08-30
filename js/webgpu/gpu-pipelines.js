@@ -6,7 +6,7 @@
 // order — both are always sequential and tightly packed in this renderer.
 
 import SHADERS from "wgsl-shaders-bundle.js"
-import { bloomChainFormat, GDEPTH_FORMAT, SCENE_FORMAT } from "./gpu-buffers.js"
+import { bloomChainFormat, GDEPTH_FORMAT, MOUNTAIN_PANO_FORMAT, SCENE_FORMAT } from "./gpu-buffers.js"
 
 // Re-exported so event modules (which draw into the scene pass) can match it.
 export { SCENE_FORMAT }
@@ -50,7 +50,11 @@ const PASS_ENTRIES = {
   deferredLighting: [uniform(F), tex2d(F), tex2d(F), texGDepth(F), texDepth(F), tex2d(F), sampCompare(F)],
   fireflyLights: GBUFFER_LIGHT,
   bikeLights: GBUFFER_LIGHT,
-  sky: [uniform(VF), tex2d(F), samp(F), tex3d(F), samp(F)],
+  // sky uniforms, mountain heightmap, noise, mountain panorama
+  sky: [uniform(VF), tex2d(F), samp(F), tex3d(F), samp(F), tex2d(F), samp(F)],
+  // The pano bake shares the sky's resources minus the panorama itself (it is
+  // the attachment there, and an attachment cannot also be bound for sampling).
+  mountainPano: [uniform(VF), tex2d(F), samp(F), tex3d(F), samp(F)],
   // uniform, depth, gAlbedo, previous frame's AO
   ssao: [uniform(F), texDepth(F), sampNearest(F), tex2d(F), sampNearest(F), tex2d(F), samp(F)],
   ssaoBlur: [tex2d(F), samp(F), texDepth(F)],
@@ -247,6 +251,7 @@ export function createAllPipelines(device, presentationFormat) {
     postprocess: { shader: "postprocess.wgsl", groups: ["frame", "postprocess"], targets: target(presentationFormat) }, // prettier-ignore
 
     mountainBake: { shader: "mountain-bake.wgsl", groups: ["empty"], vb: FULLSCREEN_VB, targets: ao, topology: "triangle-strip" }, // prettier-ignore
+    mountainPanoBake: { shader: "mountain-pano-bake.wgsl", groups: ["frame", "mountainPano"], targets: target(MOUNTAIN_PANO_FORMAT) }, // prettier-ignore
     groundBake: { shader: "ground-heightmap-bake.wgsl", groups: ["empty"], vb: FULLSCREEN_VB, targets: ao, topology: "triangle-strip" }, // prettier-ignore
     cloudShadowBake: { shader: "cloud-shadow-bake.wgsl", groups: ["cloudShadowBake"], vb: FULLSCREEN_VB, targets: target("r8unorm"), topology: "triangle-strip" }, // prettier-ignore
   }

@@ -146,6 +146,7 @@ CPU-side flock simulation. 500 (mobile) / 1000 (desktop) birds. Each frame: sepa
 
 - Mountain heightmap (1024×1024 RGBA8) and ground heightmap (512×512 RGBA8) are baked once at startup via fullscreen quad draw calls, then CPU-readback via `GPUHeightmap.readback()` (async `mapAsync`).
 - Cloud shadow (256×256 R8) is re-baked every 3 frames into a separate texture.
+- Mountain panorama (4096×768 rgba16float desktop, 1536×384 rgba8unorm low-spec): the heightfield march from `sky-common.inc.wgsl` rendered into a lat-long strip (premultiplied colour + hit mask), re-baked only when sun (~0.1°), camera (0.5 wu), atmosphere, or adaptive `mountainSteps` change (`#mountainPanoBakeNeeded`). The sky pass replaces its per-pixel march with one sample + alpha-sharpened composite.
 - CPU-side `computeSunVisibility()` (16-step ray march) and `computeCloudLightOcclusion()` (cloud density march) use the readback data. Both are throttled to run every 4 frames.
 
 **Per-frame update order in `#render()`:**

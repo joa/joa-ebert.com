@@ -52,6 +52,7 @@ import {
   initFireflyBuffers,
   initFlyBuffers,
   initBeeBuffers,
+  createMountainPano,
   createMountainHeightmap,
   createGroundHeightmap,
   createCloudShadowTexture,
@@ -240,6 +241,13 @@ export class Renderer {
   #ssaoFrame = 0
   #appliedRenderScale = 1
   #cloudShadowFrame = 0
+  // Mountain panorama bake inputs at the last bake, plus a frame cooldown.
+  #panoSun = new Float32Array(3)
+  #panoPos = new Float32Array(3)
+  #panoTurbidity = Number.NaN
+  #panoOvercast = Number.NaN
+  #panoSteps = 0
+  #panoCooldown = 0
   #cloudShadowThisFrame = false
   #cloudSunOcclusion = 1.0
   #textModelMatrix = null
@@ -386,6 +394,7 @@ export class Renderer {
     this.#tex.windNoise = withView(initWindNoiseTexture(gpu))
     this.#tex.shadowMap = withView(createShadowMap(gpu))
     this.#tex.cloudShadow = withView(createCloudShadowTexture(gpu))
+    this.#tex.mountainPano = withView(createMountainPano(gpu))
     this.#tex.mountainHeightmap = withView(createMountainHeightmap(gpu))
     this.#tex.groundHeightmap = withView(createGroundHeightmap(gpu))
 
@@ -510,7 +519,9 @@ export class Renderer {
       bind(name, [uniform(name), this.#tex.windNoise.view, gpu.linearRepeat])
     }
     bind("ground", [this.#tex.groundHeightmap.view, gpu.linearClamp])
-    bind("sky", [uniform("sky"), this.#tex.mountainHeightmap.view, gpu.linearClamp, this.#tex.noise.view, gpu.linearRepeat]) // prettier-ignore
+    // The pano samples with a repeat sampler so the azimuth seam wraps cleanly.
+    bind("sky", [uniform("sky"), this.#tex.mountainHeightmap.view, gpu.linearClamp, this.#tex.noise.view, gpu.linearRepeat, this.#tex.mountainPano.view, gpu.linearRepeat]) // prettier-ignore
+    bind("mountainPano", [uniform("sky"), this.#tex.mountainHeightmap.view, gpu.linearClamp, this.#tex.noise.view, gpu.linearRepeat]) // prettier-ignore
     for (const name of ["bird", "rain", "particle", "fireflySprite"]) bind(name, [uniform(name)])
     bind("fly", [uniform("fly")], "insect")
     bind("bee", [uniform("bee")], "insect")
@@ -1298,6 +1309,59 @@ export class Renderer {
   // Render passes
   // #############
 
+  // The mountain panorama re-bakes only when an input that shows at 500+ wu
+  // actually changed: ~0.1° of sun travel (twice a minute at real-time speed),
+  // half a world unit of camera motion, an atmosphere shift, or a coarser/finer
+  // adaptive march. Scrubbing time re-bakes continuously, throttled to every
+  // third frame by the cooldown.
+  #mountainPanoBakeNeeded(ctx, timeInfo) {
+    if (this.#panoCooldown > 0) {
+      this.#panoCooldown--
+      return false
+    }
+    const sun = ctx.sunDirection
+    const cp = ctx.cameraPosition
+    const s = this.#panoSun
+    const p = this.#panoPos
+    const steps = Math.round(timeInfo.mountainSteps ?? 64)
+    // Rain feeds into the sky pass turbidity, so track the effective value.
+    const turbidity = timeInfo.turbidity + timeInfo.rain * 0.5
+    const overcast = timeInfo.overcast + timeInfo.rain * 0.5
+    const sunDot = sun[0] * s[0] + sun[1] * s[1] + sun[2] * s[2]
+    const movedSq = (cp[0] - p[0]) ** 2 + (cp[1] - p[1]) ** 2 + (cp[2] - p[2]) ** 2
+    const unchanged =
+      sunDot > 0.999998 &&
+      movedSq < 0.25 &&
+      Math.abs(turbidity - this.#panoTurbidity) < 0.01 &&
+      Math.abs(overcast - this.#panoOvercast) < 0.01 &&
+      Math.abs(steps - this.#panoSteps) < 8
+    if (unchanged) return false
+    s[0] = sun[0]
+    s[1] = sun[1]
+    s[2] = sun[2]
+    p[0] = cp[0]
+    p[1] = cp[1]
+    p[2] = cp[2]
+    this.#panoTurbidity = turbidity
+    this.#panoOvercast = overcast
+    this.#panoSteps = steps
+    this.#panoCooldown = 2
+    return true
+  }
+
+  #recordMountainPanoBake(encoder) {
+    const target = this.#tex.mountainPano
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [colorAttachment(target.view, CLEAR_TRANSPARENT)],
+      timestampWrites: this.#profiler?.pass("mountainPano"),
+    })
+    pass.setPipeline(this.#pipelines.mountainPanoBake)
+    pass.setBindGroup(0, this.#bg.frame)
+    pass.setBindGroup(1, this.#bg.mountainPano)
+    pass.draw(3)
+    pass.end()
+  }
+
   #renderShadowPass(encoder, ctx) {
     if (!ctx.lightSpaceMatrix || !this.#geo.grass) return
     const pass = encoder.beginRenderPass({
@@ -1782,6 +1846,9 @@ export class Renderer {
         this.#fullscreenQuad,
         this.#bg.cloudShadowBake
       )
+    }
+    if (this.#mountainPanoBakeNeeded(ctx, timeInfo)) {
+      scoped("mountainPano", () => this.#recordMountainPanoBake(encoder))
     }
 
     scoped("shadow", () => this.#renderShadowPass(encoder, ctx))
