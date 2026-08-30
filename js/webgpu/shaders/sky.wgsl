@@ -197,8 +197,11 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
   let warmth = smoothstep(0.0, 0.45, sunY);
   let sunCol = mix(sky.horizonColor * 1.5, vec3f(1.02, 1.00, 0.97), warmth);
 
+  // Dual-lobe Henyey–Greenstein (Wrenninge / Schneider): a strong forward lobe
+  // gives the sunward silver lining, a weak back lobe keeps anti-solar cloud
+  // faces softly filled instead of flat.
   let cosTheta = dot(rd, normalize(sunDir));
-  let hgBoost = henyeyGreenstein(cosTheta, 0.5) * 4.0 * PI;
+  let hgBoost = mix(henyeyGreenstein(cosTheta, -0.2), henyeyGreenstein(cosTheta, 0.5), 0.7) * 4.0 * PI;
 
   let moonBlend = smoothstep(0.0, -0.2, sunY);
   let moonDir = normalize(vec3f(-sunDir.x, -sunDir.y + 0.1, sunDir.z));
@@ -223,6 +226,11 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
 
     let od = shadowOD(pos, shadowDir);
     let shadowAtt = exp(-od * sky.cloudSigmaE);
+    // Beer–powder (Schneider, "Real-Time Volumetric Cloudscapes of Horizon:
+    // Zero Dawn"): light in optically thin regions has not yet in-scattered, so
+    // lit cloud edges darken into the cauliflower look. Floored at 0.4 so thin
+    // wisps dim rather than go black.
+    let powder = mix(0.4, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE));
 
     let relH = clamp((pos.y - sky.cloudBase) / (sky.cloudTop - sky.cloudBase), 0.0, 1.0);
     let topSoften = 1.0 - 0.22 * pow(relH * shadowAtt, 2.5);
@@ -230,7 +238,7 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
     let litScale = select(0.4 * sin(clamp(-lightY / 0.15, 0.0, 1.0) * PI), lightY, lightY >= 0.0);
 
     let Ldirect = lightCol * litScale
-                * shadowAtt
+                * shadowAtt * powder
                 * (0.72 + 0.28 * hgBoost) * 1.05
                 * topSoften;
 
