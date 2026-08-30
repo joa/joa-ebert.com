@@ -126,7 +126,13 @@ visible tiles at `grassLodDistance` (default 18 wu) into near/far run lists and 
 tile are dropped in both camera and shadow passes (`grassDedup`). All three are live controls for
 A/B toggling in the debug panel.
 
-### 2.3 Render-scale as an adaptive-quality lever (biggest mobile/4K win)
+### 2.3 Render-scale as an adaptive-quality lever (biggest mobile/4K win) — DONE
+
+Implementation: internal targets (G-buffer, depth, scene, post chain) size at
+`renderScale × canvas`; the swapchain stays full-res and postprocess upsamples while compositing.
+`AdaptiveQuality` drives it as a hysteretic two-rung ladder (1.0 → 0.85 → 0.7) that only engages
+after step counts bottom out (q < 0.25 / 0.12), with dwell times so target rebuilds stay rare. A
+`renderScale` control (min 0.5) composes with the ladder via `min()` for manual testing.
 
 `AdaptiveQuality` scales step counts but never resolution; the canvas runs at full
 `devicePixelRatio`. Add a `renderScale` param (floor ~0.7): size the internal targets at
@@ -161,18 +167,18 @@ half-res failure mode (scanlines, 2026-07-07) — leave it; render-scale shrinks
 
 ## Part 3 — Order
 
-| Step | Item                                                             | Effort | Type     | Status  |
-| ---- | ---------------------------------------------------------------- | ------ | -------- | ------- |
-| 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done    |
-| 2    | Ground material restore (§1.3)                                   | S      | fidelity | done    |
-| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done    |
-| 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity | done    |
-| 5    | Tonemap-aware FXAA (§1.5); Poisson rotation moved to TAA step    | S      | fidelity | done    |
-| 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     | 6b done |
-| 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity | done    |
-| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     |         |
-| 9    | TAA prototype behind a flag (§1.5)                               | L      | both     |         |
-| 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity |         |
+| Step | Item                                                             | Effort | Type     | Status |
+| ---- | ---------------------------------------------------------------- | ------ | -------- | ------ |
+| 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done   |
+| 2    | Ground material restore (§1.3)                                   | S      | fidelity | done   |
+| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done   |
+| 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity | done   |
+| 5    | Tonemap-aware FXAA (§1.5); Poisson rotation moved to TAA step    | S      | fidelity | done   |
+| 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     | done   |
+| 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity | done   |
+| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     |        |
+| 9    | TAA prototype behind a flag (§1.5)                               | L      | both     |        |
+| 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity |        |
 
 Every new tunable must land in `PARAMS` in `controls-ui.js` per the repo rule.
 

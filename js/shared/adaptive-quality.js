@@ -44,6 +44,18 @@ const FOG_TARGET_AT = PHASE_SPLIT
 const FOG_VOL_MAX = 32
 const FOG_HYSTERESIS = 6
 
+// Render scale — the last rung, engaging only after the step counts above have
+// bottomed out. Rung r is entered when q falls below downAt and left only once
+// q recovers past upAt (hysteresis), each after a dwell: applying a new scale
+// rebuilds every render target (a resize-class hitch), so changes must be rare.
+const SCALE_LADDER = [1.0, 0.85, 0.7]
+const SCALE_RUNGS = [
+  { downAt: 0.25, upAt: 0.31 },
+  { downAt: 0.12, upAt: 0.18 },
+]
+const SCALE_DOWN_DWELL_S = 1.0
+const SCALE_UP_DWELL_S = 4.0
+
 export class AdaptiveQuality {
   #q = S.isMobile ? 0.25 : 0.5
   #fps = TARGET_FPS
@@ -52,6 +64,8 @@ export class AdaptiveQuality {
   #fogEnabled = true
   #enabled = true
   #locked = false
+  #scaleIdx = 0
+  #scaleDwellS = 0
   // Reused output object — apply() rewrites every key each frame.
   #out = {}
 
@@ -91,6 +105,26 @@ export class AdaptiveQuality {
     } else {
       this.#q = Math.max(0, this.#q + Math.max(-RATE_DOWN * dt, KP * err * dt))
     }
+
+    this.#updateRenderScale(dt)
+  }
+
+  #updateRenderScale(dt) {
+    let want = 0
+    for (let r = 0; r < SCALE_RUNGS.length; r++) {
+      const held = this.#scaleIdx > r
+      if (this.#q < (held ? SCALE_RUNGS[r].upAt : SCALE_RUNGS[r].downAt)) want = r + 1
+    }
+    if (want === this.#scaleIdx) {
+      this.#scaleDwellS = 0
+      return
+    }
+    this.#scaleDwellS += dt
+    const dwellS = want > this.#scaleIdx ? SCALE_DOWN_DWELL_S : SCALE_UP_DWELL_S
+    if (this.#scaleDwellS >= dwellS) {
+      this.#scaleIdx = want
+      this.#scaleDwellS = 0
+    }
   }
 
   // Two-phase interpolation:
@@ -125,6 +159,9 @@ export class AdaptiveQuality {
     const fogDisabled = (timeInfo.fogSteps ?? 0) === 0
     out.fogSteps = fogDisabled ? 0 : this.#fogEnabled ? Math.max(FOG_VOL_MIN, fogRaw) : FOG_VOL_MIN
     out.fogQuality = fogDisabled || !this.#fogEnabled ? 0 : timeInfo.fogQuality
+    // min() composes the two authorities: the control can force a lower scale,
+    // the ladder can drop it further under load; neither can raise past the other.
+    out.renderScale = Math.min(timeInfo.renderScale ?? 1, SCALE_LADDER[this.#scaleIdx])
     out.depthOfField = timeInfo.depthOfField * q
     out.cloudTop = Math.max(
       Math.min(timeInfo.cloudBase + 32, timeInfo.cloudTop),
