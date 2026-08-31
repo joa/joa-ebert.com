@@ -169,9 +169,17 @@ fn contrastCurve(c_in: vec3f, contrast: f32) -> vec3f {
 }
 
 // FXAA
+//
+// The scene is pre-tonemap HDR, so raw luma from a 14× sun pixel would dominate
+// the local-contrast heuristics and un-antialias every edge near a bright
+// source. fxaaLuma therefore range-compresses (y / (1 + y), monotonic — every
+// comparison is preserved, only the absolute thresholds see bounded values).
+// Colours themselves stay linear: blending taps in compressed space biases the
+// result toward the darker side and smears grass colour into the sky.
 
 fn fxaaLuma(c: vec3f) -> f32 {
-  return dot(c, vec3f(0.299, 0.587, 0.114));
+  let y = dot(c, vec3f(0.299, 0.587, 0.114));
+  return y / (1.0 + y);
 }
 
 fn fxaaLoadRGB(uv: vec2f) -> vec3f {
@@ -479,6 +487,27 @@ fn ppRayMarchFog(camPos: vec3f, fragPos: vec3f, isSkyFog: bool, noiseUV: vec2f) 
   let ambientFog = mix(warmAmbient, fog.fogColor, 0.25);
   let phaseColor = mix(ambientFog, sunColor,
                        clamp(sunGlow * 0.65 * frame.sunAboveHorizon, 0.0, 1.0));
+  // Prefilter fireflies to those whose light sphere the ray actually passes
+  // through — one closest-approach test per firefly, instead of a distance test
+  // per firefly per march step (32 × 32 in the worst case). The list holds all
+  // 32 slots, so the march output is bit-identical to testing every firefly:
+  // a capped list would drop whole light spheres for angular sectors of rays,
+  // which reads as hard-edged wedges in the fog.
+  var nearIdx: array<u32, 32>;
+  var nearCount = 0u;
+  if (fog.fireflyCount > 0u && fog.fireflyFactor > 0.0) {
+    let r = max(fog.fireflyLightRadius, 0.001);
+    for (var fi = 0u; fi < min(fog.fireflyCount, 32u); fi++) {
+      if (fog.fireflyData[fi].w <= 0.001) { continue; }
+      let toF = fog.fireflyData[fi].xyz - camPos;
+      let tc = dot(toF, rayDir);
+      if (tc < -r || tc > totalDist + r) { continue; }
+      let d2 = dot(toF, toF) - tc * tc;
+      if (d2 >= r * r) { continue; }
+      nearIdx[nearCount] = fi;
+      nearCount++;
+    }
+  }
   var transmittance: f32 = 1.0;
   var inScattered = vec3f(0.0);
   let fireflyColor = vec3f(0.55, 1.0, 0.25);
@@ -489,18 +518,16 @@ fn ppRayMarchFog(camPos: vec3f, fragPos: vec3f, isSkyFog: bool, noiseUV: vec2f) 
     if (sigma > 0.0005) {
       let stepT = exp(-sigma * stepSize);
       inScattered += transmittance * phaseColor * sigma * stepSize;
-      if (fog.fireflyCount > 0u && fog.fireflyFactor > 0.0) {
-        let invRadius = 1.0 / max(fog.fireflyLightRadius, 0.001);
-        for (var fi: i32 = 0; fi < i32(fog.fireflyCount); fi++) {
-          let ffPos = fog.fireflyData[fi].xyz;
-          let ffBright = fog.fireflyData[fi].w;
-          let d = length(ffPos - pos);
-          if (d >= fog.fireflyLightRadius) { continue; }
-          let atten = 1.0 - d * invRadius;
-          inScattered += transmittance * fireflyColor
-                       * (atten * atten) * ffBright
-                       * fog.fireflyFactor * sigma * stepSize;
-        }
+      let invRadius = 1.0 / max(fog.fireflyLightRadius, 0.001);
+      for (var ni = 0u; ni < nearCount; ni++) {
+        let ffPos = fog.fireflyData[nearIdx[ni]].xyz;
+        let ffBright = fog.fireflyData[nearIdx[ni]].w;
+        let d = length(ffPos - pos);
+        if (d >= fog.fireflyLightRadius) { continue; }
+        let atten = 1.0 - d * invRadius;
+        inScattered += transmittance * fireflyColor
+                     * (atten * atten) * ffBright
+                     * fog.fireflyFactor * sigma * stepSize;
       }
       // Headlight beam: a cone of scattered halogen light carving through the fog.
       let bikeReach = fog.bikePos.w;

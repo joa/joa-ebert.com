@@ -39,7 +39,7 @@ Wherever ground shows through (under sparse grass, DoF-blurred foreground) it no
 If `?perf` shows a real G-buffer cost on mobile, gate `bumpGrad` (the expensive term) on
 `S.lowSpec` rather than reverting.
 
-### 1.4 Bloom is disabled at night — when the emissive sources are
+### 1.4 Bloom is disabled at night — when the emissive sources are — DONE
 
 `renderer.js` skips the bloom pass whenever `isNight()`. But night is when the scene is full of
 genuine HDR emitters: moon, bike lamps (which get a hand-painted screen-space glow in
@@ -47,13 +47,20 @@ genuine HDR emitters: moon, bike lamps (which get a hand-painted screen-space gl
 already excludes the dark sky, cost is quarter-res — and dial the painted glow down. Keep the
 painted lens flare; that is a lens effect, not scattering.
 
+Revised after local verification: with sub-1.0 thresholds, night bloom picked up the
+headlight-lit grass and bloomed the whole cast-light cone into a hazy wedge. The night keyframes'
+`bloomThreshold` now sit above 1.0 (1.1–1.15) so only true HDR emitters bloom — meaningful now
+that the scene buffer is genuinely HDR (the fog march's firefly prefilter was the other cone
+suspect; its list now holds all 32 slots, making it bit-identical to the unfiltered loop).
+
 ### 1.5 Anti-aliasing: the grass field's shimmer ceiling is FXAA
 
 Alpha-tested grass with a screen-anchored 4×4 Bayer dither + FXAA shimmers by construction, and
 FXAA runs on pre-tonemap HDR luma where a 14× sun pixel wrecks its local-contrast heuristics.
 
-- Cheap first step: run FXAA on tonemapped luma (Karis-style `c / (1 + luma)` on the taps, or
-  restructure to post-tonemap).
+- Cheap first step — DONE (revised after local verification): compressing the colour taps smeared
+  grass colour into the sky (compressed-space blends bias dark), so only `fxaaLuma` compresses
+  (`y / (1 + y)`, monotonic — decisions bounded) while colour blends stay linear as before.
 - Structural (biggest single visual upgrade available): TAA. `prevViewProjectionMatrix` is already
   in FrameUniforms and SSAO already does depth-rejected reprojection, so the machinery is proven
   in-repo. TAA resolves the grass dither into smooth coverage, kills blade shimmer and specular
@@ -64,11 +71,12 @@ FXAA runs on pre-tonemap HDR luma where a 14× sun pixel wrecks its local-contra
 ### 1.6 Shadows: soften cheaply, then contact-harden
 
 - Rotate the Poisson disk per frame as well as per pixel (one uniform) so temporal accumulation
-  averages 16 taps into an effective 64.
+  averages 16 taps into an effective 64. Deferred to the TAA step: without scene-level temporal
+  accumulation, per-frame rotation turns static penumbra dither into visible crawling noise.
 - PCSS-lite for solids: a 4-tap blocker-distance search scaling the PCF radius, so the text's
   shadow is sharp at the base and soft at the tip instead of uniformly radius-12 mushy.
 
-### 1.7 Clouds: two cheap terms away from "real"
+### 1.7 Clouds: two cheap terms away from "real" — DONE (powder + dual-lobe; octave fade open)
 
 Both must be mirrored in `gpu-bake.js` per the sync rule:
 
@@ -78,7 +86,7 @@ Both must be mirrored in `gpu-bake.js` per the sync rule:
   fill away from the sun, instead of one forward lobe.
 - Optionally fade the `fbmDetail` octaves with ray distance — both aerial softness and a perf win.
 
-### 1.8 Grass lighting: distance-fade the per-blade normal
+### 1.8 Grass lighting: distance-fade the per-blade normal — DONE
 
 Distant blades keep their true cross-product normals, so the far field sparkles with normal
 variance at sub-pixel blade widths. Blend the normal toward up with the `distFactor` the vertex
@@ -133,7 +141,7 @@ frame, but its inputs (camera ~static, sun slow) barely change. Bake color + alp
 into a ~1024×256 lat-long strip re-baked when sun elevation moves > ε (same amortization pattern
 as the existing cloud-shadow bake); the sky pass then does one texture sample.
 
-### 2.5 Fog × fireflies inner loop
+### 2.5 Fog × fireflies inner loop — DONE
 
 `ppRayMarchFog` runs up to 32 steps × 32 firefly distance tests per pixel at night-with-fog.
 Compute each firefly's closest-approach to the ray once, keep a small fixed list of intersecting
@@ -153,18 +161,18 @@ half-res failure mode (scanlines, 2026-07-07) — leave it; render-scale shrinks
 
 ## Part 3 — Order
 
-| Step | Item                                                             | Effort | Type     | Status |
-| ---- | ---------------------------------------------------------------- | ------ | -------- | ------ |
-| 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done   |
-| 2    | Ground material restore (§1.3)                                   | S      | fidelity | done   |
-| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done   |
-| 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity |        |
-| 5    | Tonemap-aware FXAA, per-frame Poisson rotation (§1.5, §1.6)      | S      | fidelity |        |
-| 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     |        |
-| 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity |        |
-| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     |        |
-| 9    | TAA prototype behind a flag (§1.5)                               | L      | both     |        |
-| 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity |        |
+| Step | Item                                                             | Effort | Type     | Status  |
+| ---- | ---------------------------------------------------------------- | ------ | -------- | ------- |
+| 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done    |
+| 2    | Ground material restore (§1.3)                                   | S      | fidelity | done    |
+| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done    |
+| 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity | done    |
+| 5    | Tonemap-aware FXAA (§1.5); Poisson rotation moved to TAA step    | S      | fidelity | done    |
+| 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     | 6b done |
+| 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity | done    |
+| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     |         |
+| 9    | TAA prototype behind a flag (§1.5)                               | L      | both     |         |
+| 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity |         |
 
 Every new tunable must land in `PARAMS` in `controls-ui.js` per the repo rule.
 

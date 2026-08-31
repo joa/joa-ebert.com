@@ -170,11 +170,6 @@ const nightFactor = timeOfDay => {
   return 0
 }
 
-const isNight = timeInfo => {
-  const t = timeInfo.timeOfDay ?? 12
-  return t >= 18.5 || t < 6
-}
-
 const isActive = (value, threshold = 0.01) => (value ?? 0) >= threshold
 
 const compactHourForDark = dark => (dark ? 3 : 9.5)
@@ -1141,7 +1136,7 @@ export class Renderer {
     const [sunX, sunY] = this.#sunScreenPos
     const { r: fr, g: fg, b: fb } = timeInfo.fogColor
     const [lr, lg, lb] = timeInfo.cgLift
-    const skipBloom = !isActive(timeInfo.bloomIntensity) || isNight(timeInfo)
+    const skipBloom = !isActive(timeInfo.bloomIntensity)
     const { f } = this.#uniforms.postprocess
     f[0] = fr
     f[1] = fg
@@ -1773,9 +1768,9 @@ export class Renderer {
     scoped("scene", () => this.#renderScenePass(encoder, ctx, timeInfo))
 
     if (isActive(timeInfo.ssaoIntensity)) scoped("ssao", () => this.#renderSSAOPass(encoder))
-    if (isActive(timeInfo.bloomIntensity) && !isNight(timeInfo)) {
-      scoped("bloom", () => this.#renderBloomPass(encoder, timeInfo))
-    }
+    // Bloom runs at night too — that is when the HDR emitters live (moon, bike
+    // lamps, fireflies); the threshold already excludes the dark sky.
+    if (isActive(timeInfo.bloomIntensity)) scoped("bloom", () => this.#renderBloomPass(encoder, timeInfo))
     if (isActive(timeInfo.godRayIntensity)) scoped("godrays", () => this.#renderGodRaysPass(encoder, timeInfo))
     if (timeInfo.depthOfField > 0) scoped("dof", () => this.#renderDofPass(encoder))
 
