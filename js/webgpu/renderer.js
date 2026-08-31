@@ -1251,8 +1251,11 @@ export class Renderer {
   // use coarser strips their on-screen (or in-map) size cannot distinguish.
   // `withNoise` adds the per-blade noise stream the G-buffer pass needs; the
   // shadow pass omits it. `farDensity` further thins the distant layer's
-  // beyond-LOD-distance tiles (the culler's farRanges, camera pass only).
-  #drawGrass(pass, culler, withNoise, distantDensity = 1, farDensity = 1) {
+  // beyond-LOD-distance tiles (the culler's farRanges, camera pass only), and
+  // `denseDensity` prefix-thins the near field (blades are randomly attributed
+  // within a tile, so a prefix is an unbiased cut — and the same prefix in both
+  // passes keeps shadows exactly matched to the drawn blades).
+  #drawGrass(pass, culler, withNoise, distantDensity = 1, farDensity = 1, denseDensity = 1) {
     const grass = this.#geo.grass
     for (let i = 0; i < grass.layers.length; i++) {
       const layer = grass.layers[i]
@@ -1269,7 +1272,7 @@ export class Renderer {
       }
       // Distant blades are sub-texel in the shadow map — adaptive quality thins
       // them via shadowGrassDensity without visible shadow change.
-      const density = layer.distant ? distantDensity : 1
+      const density = layer.distant ? distantDensity : denseDensity
       const count = culler.rangeCounts[i]
       this.#drawGrassRanges(pass, mesh.indexCount, layer.bladesPerTile, culler.ranges[i], count, density)
       const farCount = culler.farRangeCounts[i]
@@ -1373,7 +1376,7 @@ export class Renderer {
     pass.setPipeline(this.#pipelines.shadow)
     pass.setBindGroup(0, this.#bg.frame)
     pass.setBindGroup(1, this.#bg.shadow)
-    this.#drawGrass(pass, this.#activeCuller(this.#shadowCuller), false, ctx.timeInfo?.shadowGrassDensity ?? 1)
+    this.#drawGrass(pass, this.#activeCuller(this.#shadowCuller), false, ctx.timeInfo?.shadowGrassDensity ?? 1, 1, ctx.timeInfo?.grassDenseDensity ?? 1) // prettier-ignore
 
     const shadowText = this.#pipelines.shadowText
     this.#drawObject(pass, shadowText, this.#bg.textObject, this.#geo.text, this.#geo.text?.shadowStreams)
@@ -1406,7 +1409,7 @@ export class Renderer {
     if (this.#geo.grass) {
       pass.setPipeline(this.#pipelines.grass)
       pass.setBindGroup(1, this.#bg.grass)
-      this.#drawGrass(pass, this.#activeCuller(this.#viewCuller), true, 1, ctx.timeInfo?.grassDistantDensity ?? 1)
+      this.#drawGrass(pass, this.#activeCuller(this.#viewCuller), true, 1, ctx.timeInfo?.grassDistantDensity ?? 1, ctx.timeInfo?.grassDenseDensity ?? 1) // prettier-ignore
     }
 
     const flowers = this.#geo.flower

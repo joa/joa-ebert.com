@@ -120,11 +120,20 @@ Coarse blade mesh for grass shadows (a 2048² map does not resolve 8 segments); 
 adaptive quality thin dense-layer shadow density once segment LOD is in (still open).
 
 Implementation notes for 2.1/2.2: blade meshes are now per-LOD (`meshFull`/`meshSparse`/
-`meshShadow`, 8/4/3 segments desktop, 6/3/2 low-spec); the culler splits the distant layer's
+`meshShadow`, 16/4/3 segments desktop, 8/3/2 low-spec — dense raised again by §2.1b); the culler splits the distant layer's
 visible tiles at `grassLodDistance` (default 18 wu) into near/far run lists and far tiles draw a
 `grassDistantDensity` prefix (default 0.65); distant-layer tiles covered by a streamed-in dense
 tile are dropped in both camera and shadow passes (`grassDedup`). All three are live controls for
 A/B toggling in the debug panel.
+
+### 2.1b Near-field detail doubling (post-plan, funded by the perf wins) — DONE
+
+With LOD, dedup, the panorama bake and render scale banked, the freed budget went back into the
+near field: the dense blade mesh doubled to 16 segments (low-spec takes 6 → 8), and the dense
+layer doubled to 5950 blades/tile (2× on low-spec too). A `grassDenseDensity` control draws a
+per-tile prefix so the old density is one slider away, and adaptive quality multiplies onto it
+(halving back to the pre-doubling budget under load, recovered by mid-quality) so weak devices
+never pay for detail they cannot show.
 
 ### 2.3 Render-scale as an adaptive-quality lever (biggest mobile/4K win) — DONE
 
