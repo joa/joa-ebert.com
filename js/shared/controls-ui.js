@@ -37,7 +37,7 @@ const PARAMS = [
   { key: "mountainSteps", label: "Mountain Steps", min: 16, max: 96, step: 1 },
   { key: "colorTemperature", label: "Color Temp", min: -1, max: 1, step: 0.01 },
   { key: "bloomIntensity", label: "Bloom Intensity", min: 0, max: 2, step: 0.01 },
-  { key: "bloomThreshold", label: "Bloom Threshold", min: 0, max: 1, step: 0.01 },
+  { key: "bloomThreshold", label: "Bloom Threshold", min: 0, max: 2, step: 0.01 },
   { key: "godRayIntensity", label: "God Ray Intensity", min: 0, max: 5, step: 0.1 },
   { key: "godRayDecay", label: "God Ray Decay", min: 0, max: 1, step: 0.01 },
   { key: "godRaySteps", label: "God Ray Steps", min: 1, max: 256, step: 1 },

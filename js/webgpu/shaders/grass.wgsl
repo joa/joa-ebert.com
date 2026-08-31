@@ -144,7 +144,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   let roll = input.grassStatic.y;
   rotatedPerp = normalize(rotatedPerp + vec3f(0.0, roll, 0.0));
 
-  let normal = normalize(cross(tangent, rotatedPerp));
+  // Distant blades are sub-pixel wide, so their true cross-product normals
+  // alias into per-blade sparkle. Fading toward the up vector with the same
+  // distance ramp that widens the blades lets the far meadow shade as one calm,
+  // coherent surface; the near field keeps full per-blade normal character.
+  let trueNormal = normalize(cross(tangent, rotatedPerp));
+  let normal = normalize(mix(trueNormal, vec3f(0.0, 1.0, 0.0), distFactor * 0.7));
 
   let toCamera = normalize(frame.cameraPosition - vec3f(grassPosition.x, 0.0, grassPosition.z));
   let leanVar = input.grassStatic.z;
