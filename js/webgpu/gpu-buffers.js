@@ -19,10 +19,14 @@ import S from "../shared/settings.js"
 // ########################################
 
 export const AREA_SIZE = 40.0
-export const BLADE_COUNT = S.lowSpecTBDR ? 400000 : 1000000
 export const BLADE_HEIGHT = 0.3
 export const BLADE_WIDTH = 0.015
-export const BLADE_SEGMENTS = S.lowSpec ? 6 : 8
+// Near-field blade curve. Doubled on desktop (8 → 16) after the LOD, dedup and
+// panorama wins freed the vertex budget — the dense field is where individual
+// blade silhouettes are actually read. Low-spec takes a smaller step (6 → 8):
+// mobile never had the same headroom, and the adaptive grassDenseDensity lever
+// (adaptive-quality.js) is its safety valve, not the mesh.
+export const BLADE_SEGMENTS = S.lowSpec ? 8 : 16
 // Blade mesh LODs. Distant-field blades are widened 2× and stand a few pixels
 // tall, and the shadow map resolves silhouettes even less — neither can show a
 // full-segment Bézier curve, so coarser strips halve their vertex + curve work.
@@ -34,7 +38,12 @@ export const NUM_TILES = TILES_X * TILES_X
 export const DENSE_X = 11
 export const DENSE_TILES = DENSE_X * DENSE_X
 export const BLADES_SPARSE = S.lowSpecTBDR ? 200 : 400
-export const BLADES_DENSE = Math.round((BLADE_COUNT - NUM_TILES * BLADES_SPARSE) / DENSE_TILES)
+// Doubled from the historical remainder budget (2975 / 661 per tile) for the
+// same reason as BLADE_SEGMENTS. grassDenseDensity draws a per-tile prefix, so
+// adaptive quality (and the debug control) can dial this back to the old
+// density live without touching the buffers.
+export const BLADES_DENSE = S.lowSpecTBDR ? 1322 : 5950
+export const BLADE_COUNT = NUM_TILES * BLADES_SPARSE + DENSE_TILES * BLADES_DENSE
 export const SHADOWMAP_SIZE = S.lowSpec ? 1024 : 2048
 export const GROUND_N = 256
 export const BLOOM_LEVELS = S.lowSpec ? 1 : 4

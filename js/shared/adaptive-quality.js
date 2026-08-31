@@ -162,6 +162,9 @@ export class AdaptiveQuality {
     // min() composes the two authorities: the control can force a lower scale,
     // the ladder can drop it further under load; neither can raise past the other.
     out.renderScale = Math.min(timeInfo.renderScale ?? 1, SCALE_LADDER[this.#scaleIdx])
+    // Near-field grass density: control × adaptive. Under load this halves the
+    // dense layer back to its pre-doubling budget, recovering by mid-quality.
+    out.grassDenseDensity = (timeInfo.grassDenseDensity ?? 1) * this.#scaleParam(q, 0.5, 1, PHASE_SPLIT, 1)
     out.depthOfField = timeInfo.depthOfField * q
     out.cloudTop = Math.max(
       Math.min(timeInfo.cloudBase + 32, timeInfo.cloudTop),

@@ -64,6 +64,7 @@ const PARAMS = [
   { key: "shadowGrassDensity", label: "Shadow Grass Density", min: 0.25, max: 1, step: 0.05 },
   { key: "grassLodDistance", label: "Grass LOD Distance", min: 4, max: 40, step: 1 },
   { key: "grassDistantDensity", label: "Grass Distant Density", min: 0.2, max: 1, step: 0.05 },
+  { key: "grassDenseDensity", label: "Grass Near Density", min: 0.25, max: 1, step: 0.05 },
   { key: "grassDedup", label: "Grass Layer Dedup", type: "bool" },
   { key: "renderScale", label: "Render Scale", min: 0.5, max: 1, step: 0.05 },
   { key: "dewAmount", label: "Dew Amount", min: 0, max: 1, step: 0.01 },
