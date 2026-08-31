@@ -49,12 +49,18 @@ export const GROUND_N = 256
 export const BLOOM_LEVELS = S.lowSpec ? 1 : 4
 // Sentinel for tile slots the grass worker has not populated yet.
 export const TILE_UNSET = 0x7fffffff
-export const NOISE_TEX_WIDTH = S.lowSpec ? 32 : 64
-export const NOISE_TEX_HEIGHT = S.lowSpec ? 32 : 64
-export const NOISE_TEX_DEPTH = S.lowSpec ? 32 : 64
-export const NOISE_TEX_PERIOD_X = NOISE_TEX_WIDTH * 0.5
-export const NOISE_TEX_PERIOD_Y = NOISE_TEX_HEIGHT * 0.5
-export const NOISE_TEX_PERIOD_Z = NOISE_TEX_DEPTH * 0.5
+export const NOISE_TEX_WIDTH = S.lowSpec ? 64 : 128
+export const NOISE_TEX_HEIGHT = S.lowSpec ? 64 : 128
+export const NOISE_TEX_DEPTH = S.lowSpec ? 64 : 128
+// The period is the noise feature count per tile; the texel count is only how
+// finely those features are sampled. The periods stay at their pre-doubling
+// values (16 low-spec / 32 desktop — the lattice hash depends only on the
+// period, so cloud and fog shapes are bit-identical), while the doubled texel
+// count raises sampling from 2 to 4 texels per noise cell — which is what
+// sharpens the high fbm octaves the cloud march and fog stack on top.
+export const NOISE_TEX_PERIOD_X = NOISE_TEX_WIDTH * 0.25
+export const NOISE_TEX_PERIOD_Y = NOISE_TEX_HEIGHT * 0.25
+export const NOISE_TEX_PERIOD_Z = NOISE_TEX_DEPTH * 0.25
 
 export { BIRD_COUNT }
 
@@ -224,8 +230,8 @@ export function initGroundBuffers(gpu) {
   }
 }
 
-// 3D Noise Texture (128x128x128 R8, ~2 MiB)
-// ##############################
+// 3D Noise Texture (128³ R8 ~2 MiB desktop, 64³ ~256 KiB low-spec)
+// ################################################################
 
 export function initNoiseTextureAsync(gpu) {
   const W = NOISE_TEX_WIDTH,
