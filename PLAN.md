@@ -73,8 +73,10 @@ FXAA runs on pre-tonemap HDR luma where a 14× sun pixel wrecks its local-contra
 - Rotate the Poisson disk per frame as well as per pixel (one uniform) so temporal accumulation
   averages 16 taps into an effective 64. Deferred to the TAA step: without scene-level temporal
   accumulation, per-frame rotation turns static penumbra dither into visible crawling noise.
-- PCSS-lite for solids: a 4-tap blocker-distance search scaling the PCF radius, so the text's
-  shadow is sharp at the base and soft at the tip instead of uniformly radius-12 mushy.
+- PCSS-lite for solids: attempted and reverted — both the plain blocker search and a
+  consensus-gated variant left artifacts on the letter faces (sparse occluders like birds and
+  grass blades destabilise any per-pixel blocker estimate at this shadow-map density). Solids are
+  back on the fixed radius-12 PCF. Revisit only with a temporally-filtered estimate (TAA era).
 
 ### 1.7 Clouds: two cheap terms away from "real" — DONE (powder + dual-lobe; octave fade open)
 
@@ -94,8 +96,11 @@ shader already computes — the far meadow reads as a calm, coherent surface. On
 
 ### 1.9 Smaller polish
 
-- Stars pop on/off per cell (`hash < 0.997` gate) — use a magnitude falloff, add a Milky-Way band
-  from the existing 3D noise.
+- Stars — DONE: the hash margin above the gate now doubles as a power-shaped magnitude (most
+  stars dim, a rare few blaze). Milky Way: attempted twice, removed — both smooth-noise versions
+  read as a smeared blob; the volumetric-fog approach cannot give the granular unresolved-star
+  texture that makes it read. If revisited, do it as a dense extra star layer (thousands of tiny
+  dim points clustered along the band), not as a glow.
 - Mountain haze uses a fixed `hazeDir`; using the actual ray direction in the `atmosphere()` call
   gives sun-azimuth-dependent golden-hour haze.
 
@@ -176,18 +181,18 @@ half-res failure mode (scanlines, 2026-07-07) — leave it; render-scale shrinks
 
 ## Part 3 — Order
 
-| Step | Item                                                             | Effort | Type     | Status |
-| ---- | ---------------------------------------------------------------- | ------ | -------- | ------ |
-| 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done   |
-| 2    | Ground material restore (§1.3)                                   | S      | fidelity | done   |
-| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done   |
-| 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity | done   |
-| 5    | Tonemap-aware FXAA (§1.5); Poisson rotation moved to TAA step    | S      | fidelity | done   |
-| 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     | done   |
-| 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity | done   |
-| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     | done   |
-| 9    | TAA prototype behind a flag (§1.5)                               | L      | both     |        |
-| 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity |        |
+| Step | Item                                                             | Effort | Type     | Status  |
+| ---- | ---------------------------------------------------------------- | ------ | -------- | ------- |
+| 1    | HDR clamp fixes (§1.1, §1.2) + god-ray guard                     | XS     | fidelity | done    |
+| 2    | Ground material restore (§1.3)                                   | S      | fidelity | done    |
+| 3    | Grass segment LOD + distance density + sparse-under-dense (§2.1) | M      | perf     | done    |
+| 4    | Night bloom (§1.4), distant grass normal fade (§1.8)             | S      | fidelity | done    |
+| 5    | Tonemap-aware FXAA (§1.5); Poisson rotation moved to TAA step    | S      | fidelity | done    |
+| 6    | Render-scale lever (§2.3), fog firefly culling (§2.5)            | M      | perf     | done    |
+| 7    | Cloud powder + dual-lobe HG (§1.7) with `gpu-bake.js` mirror     | S      | fidelity | done    |
+| 8    | Mountain panorama bake (§2.4)                                    | M      | perf     | done    |
+| 9    | TAA prototype behind a flag (§1.5)                               | L      | both     | skipped |
+| 10   | PCSS-lite on solids, night-sky polish (§1.6, §1.9)               | M      | fidelity | partial |
 
 Every new tunable must land in `PARAMS` in `controls-ui.js` per the repo rule.
 
