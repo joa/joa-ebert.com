@@ -219,7 +219,11 @@ fn stars(dir: vec3f) -> f32 {
   let magUV = fract((d * 0.28 + vec3f(5.7, 2.1, 8.3)) / NOISE_WRAP_SCALE);
   let mag = textureSampleLevel(noiseTex, noiseSampler, magUV, 0.0).r;
   let spot = smoothstep(0.35, 0.05, length(fr));
-  return spot * (0.5 + 0.5 * mag) * (0.9 + 0.1 * sin(frame.time * TIME_SCALE * 8.0 + h * 100.0));
+  // Magnitude falloff: the hash margin above the gate doubles as a star
+  // magnitude, power-shaped so most stars sit dim and a rare few blaze —
+  // instead of every star popping in at identical full brightness.
+  let magnitude = mix(0.18, 1.0, pow((h - 0.997) / 0.003, 1.5));
+  return spot * magnitude * (0.5 + 0.5 * mag) * (0.9 + 0.1 * sin(frame.time * TIME_SCALE * 8.0 + h * 100.0));
 }
 
 // Moon
