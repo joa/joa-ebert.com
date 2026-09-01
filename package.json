@@ -20,14 +20,14 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "@tailwindcss/vite": "^4.2.1",
+    "@tailwindcss/vite": "^4.3.3",
     "concurrently": "^9.2.1",
     "prettier": "^3.8.1",
     "puppeteer": "^25.3.0",
     "sharp": "^0.34.5",
-    "tailwindcss": "^4.2.1",
+    "tailwindcss": "^4.3.3",
     "vite": "^8.0.0",
     "vite-hugo-plugin": "^5.1.0",
-    "vite-plugin-static-copy": "^2.0.0"
+    "vite-plugin-static-copy": "^4.1.1"
   }
 }
