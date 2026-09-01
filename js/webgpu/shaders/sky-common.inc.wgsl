@@ -52,6 +52,8 @@ struct SkyUniforms {
   pAx: f32, pBx: f32, pCx: f32, pDx: f32, pEx: f32,
   pAy: f32, pBy: f32, pCy: f32, pDy: f32, pEy: f32,
   mountainSteps: u32,
+  cloudClumping: f32,
+  cloudClumpScale: f32,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

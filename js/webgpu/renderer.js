@@ -1068,6 +1068,8 @@ export class Renderer {
     preethamPrecomputeInto(f, 20, f[17], ctx.sunDirection ? ctx.sunDirection[1] : 0.5)
     // mountainSteps at byte 164 (float offset 41, after the 21 Preetham floats)
     dv.setUint32(164, Math.round(timeInfo.mountainSteps ?? 64), true)
+    f[42] = timeInfo.cloudClumping
+    f[43] = timeInfo.cloudClumpScale
     uniforms.write()
   }
 

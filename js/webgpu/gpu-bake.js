@@ -22,7 +22,8 @@ export function bakeOnce(device, pipeline, target, fullscreenQuad, bindGroup) {
 }
 
 // struct CloudShadowBakeUniforms: sunDir(vec3f@0), cloudBase(f32@12),
-//   cloudCoverage(f32@16), windStrength(f32@20), windDir(vec2f@24), time(f32@32)
+//   cloudCoverage(f32@16), windStrength(f32@20), windDir(vec2f@24), time(f32@32),
+//   cloudClumping(f32@36), cloudClumpScale(f32@40)
 export function writeCloudShadowUniforms(uniforms, ctx, windUniforms) {
   const f = uniforms.f
   f[0] = ctx.primaryLightDir.x
@@ -34,6 +35,8 @@ export function writeCloudShadowUniforms(uniforms, ctx, windUniforms) {
   f[6] = windUniforms.windDirection[0]
   f[7] = windUniforms.windDirection[1]
   f[8] = ctx.nowSec
+  f[9] = ctx.timeInfo.cloudClumping
+  f[10] = ctx.timeInfo.cloudClumpScale
   uniforms.write()
 }
 
@@ -131,20 +134,64 @@ function skyFbmDetail4(data, px, py, pz, timeSec) {
   return f
 }
 
-function cpuCloudDensity(data, px, py, pz, timeSec, cloudBase, cloudTop, coverage, windX, windZ) {
+// Mirrors cascadeFbm() in sky.wgsl.
+const FBM5_MEAN = 0.4682
+const CASCADE_MEAN = 0.9976
+const CASCADE_GAIN = 0.2695
+
+function skyCascadeFbm(data, px, py, pz, timeSec) {
+  let f = 1,
+    weight = 0.85
+  for (let i = 0; i < 4; i++) {
+    f *= 1 + weight * (2 * skyNoise3(data, px, py, pz, timeSec) - 1)
+    px = px * 2.02 + 5.1
+    py = py * 2.02 + 1.3
+    pz = pz * 2.02 + 3.7
+    weight *= 0.6
+  }
+  return FBM5_MEAN + (f - CASCADE_MEAN) * CASCADE_GAIN
+}
+
+// Mirrors weatherField() in sky.wgsl.
+function cpuWeatherField(data, qx, qz, timeSec, clumpScale) {
+  const cellsPerQ = 45 / clumpScale
+  const boil = timeSec * 0.0001
+  let px = (qx + boil) * cellsPerQ,
+    py = 21.7 * cellsPerQ,
+    pz = (qz + boil * 1.1) * cellsPerQ
+  let f = 0,
+    amp = 0.5
+  for (let i = 0; i < 3; i++) {
+    f += sampleNoise3D(data, px / NOISE_WRAP_SCALE, py / NOISE_WRAP_SCALE, pz / NOISE_WRAP_SCALE) * amp
+    px = px * 2.03 + 3.3
+    py = py * 2.03 + 7.1
+    pz = pz * 2.03 + 1.9
+    amp *= 0.5
+  }
+  return smoothstep(Math.min(1, Math.max(0, (f / 0.875 - 0.3) / 0.4)))
+}
+
+function cpuCloudDensity(data, px, py, pz, timeSec, cloud, windX, windZ) {
+  const { cloudBase, cloudTop, cloudCoverage, cloudClumping, cloudClumpScale } = cloud
   const margin = (cloudTop - cloudBase) * CLOUD_OVERSHOOT
   const wobble = (skyFbm5(data, px / 260 + 8.3, py / 260, pz / 260 + 2.1, timeSec) - 0.47) * margin
   const slabBase = cloudBase + wobble
   const slabTop = cloudTop + wobble
   if (py < slabBase || py > slabTop) return 0
-  const relH = (py - slabBase) / (slabTop - slabBase)
   const sat = x => Math.min(1, Math.max(0, x))
-  const vEnv = smoothstep(sat(relH / 0.15)) * smoothstep(sat((1 - relH) / 0.6))
   const scale = 1 / 45
   const qx = px * scale + windX,
     qy = py * scale,
     qz = pz * scale + windZ
-  const base = skyFbm5(data, qx, qy, qz, timeSec)
+
+  const weather = cpuWeatherField(data, qx, qz, timeSec, cloudClumpScale)
+  const coverage = sat(cloudCoverage - (weather - 0.5) * cloudClumping)
+  const ceiling = 0.7 + 0.3 * weather
+
+  const relH = (py - slabBase) / (slabTop - slabBase)
+  const vEnv =
+    smoothstep(sat(relH / (0.15 * ceiling))) * (1 - smoothstep(sat((relH - ceiling * 0.4) / (ceiling * 0.6))))
+  const base = skyCascadeFbm(data, qx, qy, qz, timeSec)
   const detail = skyFbm5(data, qx * 3 + 0.5, qy * 3 + 1.7, qz * 3 + 3.1, timeSec)
   const detail2 = skyFbmDetail4(data, qx * 6.5 + 2.3, qy * 6.5 + 0.8, qz * 6.5 + 4.1, timeSec)
   const erode = (detail * 0.7 + detail2 * 0.3) * 0.25 * (1 - smoothstep(sat((base - coverage) / 0.15)))
@@ -156,7 +203,7 @@ export function computeCloudLightOcclusion(ctx, noiseData, windUniforms, prevOcc
   if (!noiseData) return 1.0
   const { x: sx, y: sy, z: sz } = ctx.primaryLightDir
   if (sy <= 0.01) return 1.0
-  const { cloudBase, cloudTop, cloudCoverage: coverage } = ctx.timeInfo
+  const { cloudBase, cloudTop } = ctx.timeInfo
   const [cx, cy, cz] = ctx.cameraPosition
   const timeSec = ctx.nowSec
   const windX = windUniforms.windDirection[0] * windUniforms.windStrength * timeSec * 0.0008
@@ -177,9 +224,7 @@ export function computeCloudLightOcclusion(ctx, noiseData, windUniforms, prevOcc
       cy + sy * t,
       cz + sz * t,
       timeSec,
-      cloudBase,
-      cloudTop,
-      coverage,
+      ctx.timeInfo,
       windX,
       windZ
     )

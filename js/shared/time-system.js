@@ -3,7 +3,7 @@ import { lerp, smoothstep } from "./math-utils.js"
 import { solarElevationAzimuth, solarDirection, dateForLocalHour } from "./solar.js"
 import { Prng } from "./prng.js"
 
-const seed = ((d) => d.getFullYear() + (d.getMonth() + 1) * 31 + d.getDate())(S.date)
+const seed = (d => d.getFullYear() + (d.getMonth() + 1) * 31 + d.getDate())(S.date)
 const rng = new Prng(seed)
 
 const PERIOD_NIGHT = "night"
@@ -27,7 +27,7 @@ const pickCloudParameters = () => {
 
   return {
     cloudBase: 65.0 - rng.next() * 15.0,
-    cloudTop:89.0 + rng.next() * 11.0,
+    cloudTop: 89.0 + rng.next() * 11.0,
     cloudCoverage: 0.55 + (rng.next() - 0.5) * 0.1,
     cloudSigmaE: 0.01 + rng.next() * 0.05,
   }
@@ -35,8 +35,12 @@ const pickCloudParameters = () => {
 
 const fogQuality = S.lowSpec ? 0.0 : 1.0
 const rain = RAINY_DAY ? 0.3 + rng.next() * 0.7 : 0.0
-const {cloudBase, cloudTop, cloudCoverage, cloudSigmaE} = pickCloudParameters()
+const { cloudBase, cloudTop, cloudCoverage, cloudSigmaE } = pickCloudParameters()
 const cloudSteps = S.lowSpec ? 12 : 16
+// Weather-cell organisation: how far coverage swings between a cell and the lane
+// beside it, and how wide a cell is. See weatherField() in sky.wgsl.
+const cloudClumping = 0.3
+const cloudClumpScale = 320.0
 const cloudShadowSteps = S.lowSpec ? 2 : 3
 const overcast = 0.01
 const depthOfField = 1.2
@@ -696,6 +700,8 @@ export class TimeSystem {
     p.cloudSigmaE = L(kA.cloudSigmaE, kB.cloudSigmaE, cloudSigmaE)
     p.cloudSteps = L(kA.cloudSteps, kB.cloudSteps, cloudSteps)
     p.cloudShadowSteps = L(kA.cloudShadowSteps, kB.cloudShadowSteps, cloudShadowSteps)
+    p.cloudClumping = L(kA.cloudClumping, kB.cloudClumping, cloudClumping)
+    p.cloudClumpScale = L(kA.cloudClumpScale, kB.cloudClumpScale, cloudClumpScale)
     p.mountainSteps = L(kA.mountainSteps, kB.mountainSteps, 64)
     p.rain = L(kA.rain, kB.rain, rain)
     p.lensFlareIntensity = L(kA.lensFlareIntensity, kB.lensFlareIntensity, 0.26)

@@ -39,6 +39,64 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> SkyVertexOutput {
 
 // Cloud volume
 
+// Mesoscale weather field, returned in [0, 1] with mean 0.5.
+//
+// Real cloud fields are not statistically stationary: convection organises them
+// into clumps kilometres across with open lanes between, and a single global
+// coverage threshold applied to a stationary fbm cannot express that — it gives
+// the same puff size and the same spacing everywhere. This is the analytic
+// stand-in for the painted weather map of Schneider, "Real-Time Volumetric
+// Cloudscapes of Horizon: Zero Dawn" (SIGGRAPH 2015): one low-frequency field
+// that pushes coverage and cloud depth up inside a cell and down between cells.
+//
+// Sampled in the same wind-advected space as the base shape so clumps travel
+// *with* the clouds rather than the clouds drifting through a static pattern.
+// The mean of 0.5 keeps the modulation mean-preserving, so the keyframed
+// cloudCoverage still sets average sky cover.
+fn weatherField(qXZ: vec2f) -> f32 {
+  let cellsPerQ = 45.0 / sky.cloudClumpScale;
+  let boil = frame.time * 0.1;
+  var p = vec3f(qXZ.x + boil, 21.7, qXZ.y + boil * 1.1) * cellsPerQ;
+  var f: f32 = 0.0;
+  var amp: f32 = 0.5;
+  for (var i: i32 = 0; i < 3; i++) {
+    f += textureSampleLevel(noiseTex, noiseSampler, p / NOISE_WRAP_SCALE, 0.0).r * amp;
+    p = p * 2.03 + vec3f(3.3, 7.1, 1.9);
+    amp *= 0.5;
+  }
+  // An fbm sum is a narrow near-Gaussian about its mean; widen it so the field
+  // saturates into solidly covered cells and genuinely open lanes.
+  return smoothstep(0.30, 0.70, f * (1.0 / 0.875));
+}
+
+// Bounded multiplicative cascade (Cahalan et al., "The albedo of fractal
+// stratocumulus clouds", J. Atmos. Sci. 51, 1994 — the standard model for cloud
+// liquid water). Water content is not a *sum* of scales: each scale modulates
+// the one above it, so real fields are intermittent — mostly thin, occasionally
+// very dense. An additive fbm is near-Gaussian by the central limit theorem
+// (measured skew −0.01 against this cascade's +0.56), which is why every puff
+// came out the same weight. Same octaves and lacunarity as fbm5, multiplied
+// rather than summed, then mapped affinely onto fbm5's mean and spread so the
+// keyframed cloudCoverage threshold still means what it did. The per-octave
+// weight decays steeply — the "bounded" in bounded cascade — because carrying
+// full intermittency down to the finest octave shatters the long horizon rays
+// into speckle rather than cloud.
+const FBM5_MEAN: f32 = 0.4682;
+const CASCADE_MEAN: f32 = 0.9976;
+const CASCADE_GAIN: f32 = 0.2695;
+
+fn cascadeFbm(p_in: vec3f) -> f32 {
+  var p = p_in;
+  var f: f32 = 1.0;
+  var weight: f32 = 0.85;
+  for (var i: i32 = 0; i < 4; i++) {
+    f *= 1.0 + weight * (2.0 * noise3(p) - 1.0);
+    p = p * 2.02 + vec3f(5.1, 1.3, 3.7);
+    weight *= 0.6;
+  }
+  return FBM5_MEAN + (f - CASCADE_MEAN) * CASCADE_GAIN;
+}
+
 fn cloudDensity(p: vec3f) -> f32 {
   // Wobble the slab's base/top per column with slow, low-frequency noise so cloud
   // bottoms undulate past the nominal cloudBase plane instead of shearing flat.
@@ -50,21 +108,30 @@ fn cloudDensity(p: vec3f) -> f32 {
   if (p.y < slabBase || p.y > slabTop) {
     return 0.0;
   }
-  let relH = (p.y - slabBase) / (slabTop - slabBase);
-  let vEnv = smoothstep(0.0, 0.15, relH) * smoothstep(1.0, 0.40, relH);
 
   var q = p * (1.0 / 45.0);
   let windDrift = frame.windDirection * (frame.windStrength * frame.time * TIME_SCALE * 8.0);
   q += vec3f(windDrift.x, 0.0, windDrift.y);
-  let base = fbm5(q);
+
+  // Coverage is a *clear* threshold, so a well-covered cell lowers it. Cells also
+  // build deeper: convection towers where it is strong and flattens to wisps
+  // between, which is what varies cloud size rather than just cloud count.
+  let weather = weatherField(q.xz);
+  let coverage = clamp(sky.cloudCoverage - (weather - 0.5) * sky.cloudClumping, 0.02, 0.98);
+  let ceiling = mix(0.70, 1.0, weather);
+
+  let relH = (p.y - slabBase) / (slabTop - slabBase);
+  let vEnv = smoothstep(0.0, 0.15 * ceiling, relH) * (1.0 - smoothstep(ceiling * 0.40, ceiling, relH));
+
+  let base = cascadeFbm(q);
 
   let detail = fbm5(q * 3.0 + vec3f(0.5, 1.7, 3.1));
   let detail2 = fbmDetail(q * 6.5 + vec3f(2.3, 0.8, 4.1)) * 0.5;
   let erode = (detail * 0.7 + detail2 * 0.3) * 0.25
-            * (1.0 - smoothstep(sky.cloudCoverage, sky.cloudCoverage + 0.15, base));
+            * (1.0 - smoothstep(coverage, coverage + 0.15, base));
   let shaped = base - erode;
 
-  let density = smoothstep(sky.cloudCoverage, sky.cloudCoverage + 0.08, shaped) * vEnv;
+  let density = smoothstep(coverage, coverage + 0.08, shaped) * vEnv;
   return density;
 }
 

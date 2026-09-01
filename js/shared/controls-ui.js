@@ -34,6 +34,8 @@ const PARAMS = [
   { key: "cloudSigmaE", label: "Cloud Density", min: 0, max: 0.2, step: 0.001 },
   { key: "cloudSteps", label: "Cloud Steps", min: 1, max: 64, step: 1 },
   { key: "cloudShadowSteps", label: "Cloud Shadow Steps", min: 1, max: 16, step: 1 },
+  { key: "cloudClumping", label: "Cloud Clumping", min: 0, max: 0.8, step: 0.01 },
+  { key: "cloudClumpScale", label: "Cloud Clump Scale", min: 80, max: 2000, step: 10 },
   { key: "mountainSteps", label: "Mountain Steps", min: 16, max: 96, step: 1 },
   { key: "colorTemperature", label: "Color Temp", min: -1, max: 1, step: 0.01 },
   { key: "bloomIntensity", label: "Bloom Intensity", min: 0, max: 2, step: 0.01 },

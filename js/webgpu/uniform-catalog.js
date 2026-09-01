@@ -162,6 +162,8 @@
 //   pad:              f32,     // offset  76
 //   pYz … pEy:        21 × f32,// offset  80: Preetham coefficients, see atmo.js
 //   mountainSteps:    u32,     // offset 164
+//   cloudClumping:    f32,     // offset 168: coverage swing between weather cells
+//   cloudClumpScale:  f32,     // offset 172: weather cell size in world units
 // }
 // Textures: mountainHeightmap + 3D noise + samplers.
 

@@ -12,7 +12,8 @@ export function buildIntro(sunPosition) {
   const { x, y, z } = sunPosition
   const [tx, ty, tz] = [0, 0.6, 10.0]
   return [
-    { // inside r
+    {
+      // inside r
       type: PATH.LINEAR_QUAT,
       duration: 3,
       from: [-12.76, 2.03, 5.86, -0.43 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
@@ -29,7 +30,8 @@ export function buildIntro(sunPosition) {
         cloudSigmaE: constVal(0.09),
       },
     },
-    { // inside o - timelapse
+    {
+      // inside o - timelapse
       type: PATH.LINEAR_QUAT,
       duration: 4,
       from: [-2.33, 1.56, 8.8, -0.89 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
@@ -44,7 +46,8 @@ export function buildIntro(sunPosition) {
         dofFocusFar: { from: 0.1, to: 10000 },
       },
     },
-    { // over the text at night
+    {
+      // over the text at night
       type: PATH.LINEAR_QUAT,
       duration: 10,
       from: [4.74, 3.5, 11.53, -0.4 * Math.PI, -0.5 * Math.PI, 0.0],
@@ -59,7 +62,8 @@ export function buildIntro(sunPosition) {
         depthOfField: constVal(0),
       },
     },
-    { // timelapse move over the field
+    {
+      // timelapse move over the field
       type: PATH.LINEAR_QUAT,
       duration: 8,
       from: [30, 1.0, 20, -2.0 * 2.73, -0.02, 0.0],
@@ -89,7 +93,8 @@ export function buildIntro(sunPosition) {
       //rawT: true,
       timeOfDay: { from: 20.5, to: 23.5 },
     },*/
-    { // looking up from grass to the sun
+    {
+      // looking up from grass to the sun
       type: PATH.STATIC,
       duration: 5,
       at: [-20, 0.001, 20],
@@ -111,7 +116,8 @@ export function buildIntro(sunPosition) {
         timeOfDay: constVal(12.0),
       },
     },
-    { // move in front of text
+    {
+      // move in front of text
       type: PATH.LINEAR_LOOKAT,
       duration: 3,
       from: [-20, 0.001, 20],
@@ -127,13 +133,15 @@ export function buildIntro(sunPosition) {
         cloudCoverage: { from: 1.0, to: 0.59 },
       },
     },
-    { // look at text
+    {
+      // look at text
       type: PATH.STATIC,
       duration: 0.5,
       at: [0, 0.4, 0],
       lookAt: [-10, 1, 10],
     },
-    { // make it rain
+    {
+      // make it rain
       type: PATH.LINEAR_POS,
       duration: 0.5,
       from: [0, 0.4, 0],
@@ -143,7 +151,8 @@ export function buildIntro(sunPosition) {
         rain: { from: 0.0, to: 1.0 },
       },
     },
-    { // watch grass grow
+    {
+      // watch grass grow
       type: PATH.STATIC,
       duration: 4,
       at: [0, 0.4, 0],
@@ -154,7 +163,8 @@ export function buildIntro(sunPosition) {
       },
     }, // pause
     { type: PATH.STATIC, duration: 2, at: [0, 0.4, 0], lookAt: [-10, 1, 10] },
-    { // cinematic shot
+    {
+      // cinematic shot
       type: PATH.LINEAR_QUAT,
       duration: 6,
       from: [0.81, 0.94, 7.93, -0.55 * Math.PI, 0.0 * Math.PI, 0.0 * Math.PI],
@@ -182,7 +192,8 @@ export function buildIntro(sunPosition) {
         dofBlurFar: constVal(600),
       },
     },
-    { // fly through th e text
+    {
+      // fly through th e text
       type: PATH.LINEAR_QUAT,
       duration: 8.0,
       from: [tx - 4.5, 1.0, 20, 0.0 * Math.PI, 0, -0.25],
@@ -211,7 +222,8 @@ export function buildIntro(sunPosition) {
         rain: constVal(0.0),
       },
     },
-    { // sunrise
+    {
+      // sunrise
       type: PATH.LINEAR_QUAT,
       duration: 10.0,
       from: [0.14, 0.84, 9.36, -0.61 * Math.PI, 0.21 * Math.PI, -2.0 * Math.PI],
@@ -227,10 +239,11 @@ export function buildIntro(sunPosition) {
         cloudCoverage: { from: 0.59, to: 0.41 },
         godRayIntensity: constVal(3.9),
         godRayDecay: { from: 0.99, to: 0.75 },
-        timeOfDay: constVal(3)
+        timeOfDay: constVal(3),
       },
     },
-    { // watch the sun rise
+    {
+      // watch the sun rise
       type: PATH.STATIC,
       duration: 4.0,
       at: [tx - 20.74, 1.0, -0.05],
@@ -238,7 +251,8 @@ export function buildIntro(sunPosition) {
         timeOfDay: { from: 3, to: 8 },
       },
     },
-    { // watch the sun rise - pause
+    {
+      // watch the sun rise - pause
       type: PATH.STATIC,
       fadeOut: true,
       duration: 1.0,

@@ -10,7 +10,9 @@ struct CloudShadowBakeUniforms {
   windStrength: f32,
   windDirection: vec2f,
   time: f32,
-  pad: vec3f,
+  cloudClumping: f32,
+  cloudClumpScale: f32,
+  pad: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: CloudShadowBakeUniforms;
@@ -69,6 +71,24 @@ fn cFbm(pIn: vec3f) -> f32 {
   return f;
 }
 
+// Coarse mirror of weatherField() in sky.wgsl. This pass uses its own inline
+// hash noise rather than the 3D texture, so it cannot match the sky exactly —
+// but it must carry the same clumping, or the ground keeps an even shadow
+// stipple under a clumped sky.
+fn cWeather(qXZ: vec2f) -> f32 {
+  let cellsPerQ = 45.0 / u.cloudClumpScale;
+  let boil = u.time * 0.0001;
+  var p = vec3f(qXZ.x + boil, 21.7, qXZ.y + boil * 1.1) * cellsPerQ;
+  var f = 0.0;
+  var amp = 0.5;
+  for (var i = 0; i < 3; i++) {
+    f += cNoise3(p) * amp;
+    p = p * 2.03 + vec3f(3.3, 7.1, 1.9);
+    amp *= 0.5;
+  }
+  return smoothstep(0.30, 0.70, f / 0.875);
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
   let worldXZ = (input.texCoord - 0.5) * 80.0;
@@ -83,8 +103,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     let qXZ = cloudXZ / 45.0 + scroll;
     let q = vec3f(qXZ.x, 0.0, qXZ.y);
 
+    let coverage = clamp(u.cloudCoverage - (cWeather(qXZ) - 0.5) * u.cloudClumping, 0.02, 0.98);
     let base = cFbm(q);
-    let density = smoothstep(u.cloudCoverage, u.cloudCoverage + 0.15, base);
+    let density = smoothstep(coverage, coverage + 0.15, base);
     shadow = mix(1.0, 0.25, density);
   }
 
