@@ -36,12 +36,14 @@ const pickCloudParameters = () => {
 const fogQuality = S.lowSpec ? 0.0 : 1.0
 const rain = RAINY_DAY ? 0.3 + rng.next() * 0.7 : 0.0
 const { cloudBase, cloudTop, cloudCoverage, cloudSigmaE } = pickCloudParameters()
-const cloudSteps = S.lowSpec ? 12 : 16
+// Pre-baked cloud noise made each density sample ~4× cheaper (see sky.wgsl),
+// part of that budget goes back into a deeper march.
+const cloudSteps = S.lowSpec ? 14 : 24
 // Weather-cell organisation: how far coverage swings between a cell and the lane
 // beside it, and how wide a cell is. See weatherField() in sky.wgsl.
 const cloudClumping = 0.3
 const cloudClumpScale = 320.0
-const cloudShadowSteps = S.lowSpec ? 2 : 3
+const cloudShadowSteps = S.lowSpec ? 3 : 4
 const overcast = 0.01
 const depthOfField = 1.2
 const dofFocusNear = 1.0

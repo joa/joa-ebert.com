@@ -230,8 +230,18 @@ export function initGroundBuffers(gpu) {
   }
 }
 
-// 3D Noise Texture (128³ R8 ~2 MiB desktop, 64³ ~256 KiB low-spec)
-// ################################################################
+// 3D Noise Texture (128³ RGBA8 ~8 MiB desktop, 64³ ~1 MiB low-spec)
+// #################################################################
+//
+// Channel layout (see cloud-noise.js): R = legacy value noise (fog, mountain
+// material, stars), G = pre-baked Perlin-Worley cloud base fbm, B = pre-baked
+// Worley erosion fbm, A = pre-baked low-frequency value fbm (weather/wobble).
+
+export const NOISE_CHANNELS = 4
+export const NOISE_CH_VALUE = 0
+export const NOISE_CH_BASE = 1
+export const NOISE_CH_DETAIL = 2
+export const NOISE_CH_WEATHER = 3
 
 export function initNoiseTextureAsync(gpu) {
   const W = NOISE_TEX_WIDTH,
@@ -248,7 +258,7 @@ export function initNoiseTextureAsync(gpu) {
         W,
         H,
         D,
-        "r8unorm",
+        "rgba8unorm",
         GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
         data
       )

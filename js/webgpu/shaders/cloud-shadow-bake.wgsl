@@ -104,7 +104,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     let q = vec3f(qXZ.x, 0.0, qXZ.y);
 
     let coverage = clamp(u.cloudCoverage - (cWeather(qXZ) - 0.5) * u.cloudClumping, 0.02, 0.98);
-    let base = cFbm(q);
+    // Affine-match this inline fbm (mean 0.47, sd ~0.12) to the pre-baked
+    // Perlin-Worley base field the sky now thresholds (mean 0.5, sd ~0.15),
+    // so the ground shadow density keeps tracking the sky's actual cover.
+    let base = 0.5 + (cFbm(q) - 0.47) * 1.27;
     let density = smoothstep(coverage, coverage + 0.15, base);
     shadow = mix(1.0, 0.25, density);
   }

@@ -1,5 +1,13 @@
 import { smoothstep } from "../shared/math-utils.js"
-import { NOISE_TEX_DEPTH, NOISE_TEX_HEIGHT, NOISE_TEX_WIDTH } from "./gpu-buffers.js"
+import {
+  NOISE_CHANNELS,
+  NOISE_CH_BASE,
+  NOISE_CH_DETAIL,
+  NOISE_CH_WEATHER,
+  NOISE_TEX_DEPTH,
+  NOISE_TEX_HEIGHT,
+  NOISE_TEX_WIDTH,
+} from "./gpu-buffers.js"
 
 // Fullscreen quad draw into `view`, used by every bake pipeline.
 export function recordBake(encoder, pipeline, view, fullscreenQuad, bindGroup) {
@@ -61,20 +69,27 @@ export function computeSunVisibility(sunDir, origin, mountainHeightmap) {
 // NOTE: This is a CPU version of sky.wgsl's renderClouds and cloudDensity.
 //       You MUST always keep this in sync when updating sky.wgsl.
 //       The authority is always sky.wgsl.
-const NOISE_WRAP_SCALE = 32
 const CLOUD_OVERSHOOT = 0.2 // clouds spill this fraction of slab height past base/top (mirrors sky.wgsl)
 const NOISE_SIZE_X = NOISE_TEX_WIDTH
 const NOISE_SIZE_Y = NOISE_TEX_HEIGHT
 const NOISE_SIZE_Z = NOISE_TEX_DEPTH
+
+// Mirrors the sky.wgsl cloud sampling constants.
+const CLOUD_DRIFT_QX = 0.1
+const CLOUD_DRIFT_QZ = 0.11
+const BASE_TILE_Q = 8.0
+const DETAIL_TILE_Q = 4.0
+const WOBBLE_TILE_Q = 23.0
 
 // Hoisted from sampleNoise3D — defining these as closures per call created
 // ~176 short-lived functions per throttled lighting frame.
 const wrapX = c => ((c % NOISE_SIZE_X) + NOISE_SIZE_X) % NOISE_SIZE_X
 const wrapY = c => ((c % NOISE_SIZE_Y) + NOISE_SIZE_Y) % NOISE_SIZE_Y
 const wrapZ = c => ((c % NOISE_SIZE_Z) + NOISE_SIZE_Z) % NOISE_SIZE_Z
-const noiseAt = (data, x, y, z) => data[(wrapZ(z) * NOISE_SIZE_Y + wrapY(y)) * NOISE_SIZE_X + wrapX(x)] / 255
+const noiseAt = (data, x, y, z, ch) =>
+  data[((wrapZ(z) * NOISE_SIZE_Y + wrapY(y)) * NOISE_SIZE_X + wrapX(x)) * NOISE_CHANNELS + ch] / 255
 
-function sampleNoise3D(data, u, v, w) {
+function sampleNoise3D(data, u, v, w, ch) {
   u = ((u % 1) + 1) % 1
   v = ((v % 1) + 1) % 1
   w = ((w % 1) + 1) % 1
@@ -88,101 +103,49 @@ function sampleNoise3D(data, u, v, w) {
     dy = fy - iy,
     dz = fz - iz
   return (
-    noiseAt(data, ix, iy, iz) * (1 - dx) * (1 - dy) * (1 - dz) +
-    noiseAt(data, ix + 1, iy, iz) * dx * (1 - dy) * (1 - dz) +
-    noiseAt(data, ix, iy + 1, iz) * (1 - dx) * dy * (1 - dz) +
-    noiseAt(data, ix + 1, iy + 1, iz) * dx * dy * (1 - dz) +
-    noiseAt(data, ix, iy, iz + 1) * (1 - dx) * (1 - dy) * dz +
-    noiseAt(data, ix + 1, iy, iz + 1) * dx * (1 - dy) * dz +
-    noiseAt(data, ix, iy + 1, iz + 1) * (1 - dx) * dy * dz +
-    noiseAt(data, ix + 1, iy + 1, iz + 1) * dx * dy * dz
+    noiseAt(data, ix, iy, iz, ch) * (1 - dx) * (1 - dy) * (1 - dz) +
+    noiseAt(data, ix + 1, iy, iz, ch) * dx * (1 - dy) * (1 - dz) +
+    noiseAt(data, ix, iy + 1, iz, ch) * (1 - dx) * dy * (1 - dz) +
+    noiseAt(data, ix + 1, iy + 1, iz, ch) * dx * dy * (1 - dz) +
+    noiseAt(data, ix, iy, iz + 1, ch) * (1 - dx) * (1 - dy) * dz +
+    noiseAt(data, ix + 1, iy, iz + 1, ch) * dx * (1 - dy) * dz +
+    noiseAt(data, ix, iy + 1, iz + 1, ch) * (1 - dx) * dy * dz +
+    noiseAt(data, ix + 1, iy + 1, iz + 1, ch) * dx * dy * dz
   )
 }
 
-function skyNoise3(data, px, py, pz, timeSec) {
+// Mirrors cloudTexAt() in sky.wgsl for one channel.
+function cloudTexAt(data, qx, qy, qz, tileQ, ch, timeSec) {
   return sampleNoise3D(
     data,
-    (px + timeSec * 0.0001) / NOISE_WRAP_SCALE,
-    py / NOISE_WRAP_SCALE,
-    (pz + timeSec * 0.00011) / NOISE_WRAP_SCALE
+    (qx + CLOUD_DRIFT_QX * timeSec) / tileQ,
+    qy / tileQ,
+    (qz + CLOUD_DRIFT_QZ * timeSec) / tileQ,
+    ch
   )
-}
-
-function skyFbm5(data, px, py, pz, timeSec) {
-  let f = 0,
-    amp = 0.5
-  for (let i = 0; i < 4; i++) {
-    f += skyNoise3(data, px, py, pz, timeSec) * amp
-    px = px * 2.02 + 5.1
-    py = py * 2.02 + 1.3
-    pz = pz * 2.02 + 3.7
-    amp *= 0.5
-  }
-  return f
-}
-
-function skyFbmDetail4(data, px, py, pz, timeSec) {
-  let f = 0,
-    amp = 0.5
-  for (let i = 0; i < 3; i++) {
-    f += skyNoise3(data, px, py, pz, timeSec) * amp
-    px = px * 2.05 + 1.7
-    py = py * 2.05 + 9.2
-    pz = pz * 2.05 + 5.3
-    amp *= 0.5
-  }
-  return f
-}
-
-// Mirrors cascadeFbm() in sky.wgsl.
-const FBM5_MEAN = 0.4682
-const CASCADE_MEAN = 0.9976
-const CASCADE_GAIN = 0.2695
-
-function skyCascadeFbm(data, px, py, pz, timeSec) {
-  let f = 1,
-    weight = 0.85
-  for (let i = 0; i < 4; i++) {
-    f *= 1 + weight * (2 * skyNoise3(data, px, py, pz, timeSec) - 1)
-    px = px * 2.02 + 5.1
-    py = py * 2.02 + 1.3
-    pz = pz * 2.02 + 3.7
-    weight *= 0.6
-  }
-  return FBM5_MEAN + (f - CASCADE_MEAN) * CASCADE_GAIN
 }
 
 // Mirrors weatherField() in sky.wgsl.
 function cpuWeatherField(data, qx, qz, timeSec, clumpScale) {
-  const cellsPerQ = 45 / clumpScale
-  const boil = timeSec * 0.0001
-  let px = (qx + boil) * cellsPerQ,
-    py = 21.7 * cellsPerQ,
-    pz = (qz + boil * 1.1) * cellsPerQ
-  let f = 0,
-    amp = 0.5
-  for (let i = 0; i < 3; i++) {
-    f += sampleNoise3D(data, px / NOISE_WRAP_SCALE, py / NOISE_WRAP_SCALE, pz / NOISE_WRAP_SCALE) * amp
-    px = px * 2.03 + 3.3
-    py = py * 2.03 + 7.1
-    pz = pz * 2.03 + 1.9
-    amp *= 0.5
-  }
-  return smoothstep(Math.min(1, Math.max(0, (f / 0.875 - 0.3) / 0.4)))
+  const tileQ = (4 * clumpScale) / 45
+  const a = cloudTexAt(data, qx, 21.7, qz, tileQ, NOISE_CH_WEATHER, timeSec)
+  return smoothstep(Math.min(1, Math.max(0, (a - 0.3) / 0.4)))
 }
 
 function cpuCloudDensity(data, px, py, pz, timeSec, cloud, windX, windZ) {
   const { cloudBase, cloudTop, cloudCoverage, cloudClumping, cloudClumpScale } = cloud
   const margin = (cloudTop - cloudBase) * CLOUD_OVERSHOOT
-  const wobble = (skyFbm5(data, px / 260 + 8.3, py / 260, pz / 260 + 2.1, timeSec) - 0.47) * margin
+  const q0x = px / 45,
+    q0y = py / 45,
+    q0z = pz / 45
+  const wobble = (cloudTexAt(data, q0x + 8.3, q0y, q0z + 2.1, WOBBLE_TILE_Q, NOISE_CH_WEATHER, timeSec) - 0.5) * margin
   const slabBase = cloudBase + wobble
   const slabTop = cloudTop + wobble
   if (py < slabBase || py > slabTop) return 0
   const sat = x => Math.min(1, Math.max(0, x))
-  const scale = 1 / 45
-  const qx = px * scale + windX,
-    qy = py * scale,
-    qz = pz * scale + windZ
+  const qx = q0x + windX,
+    qy = q0y,
+    qz = q0z + windZ
 
   const weather = cpuWeatherField(data, qx, qz, timeSec, cloudClumpScale)
   const coverage = sat(cloudCoverage - (weather - 0.5) * cloudClumping)
@@ -190,12 +153,11 @@ function cpuCloudDensity(data, px, py, pz, timeSec, cloud, windX, windZ) {
 
   const relH = (py - slabBase) / (slabTop - slabBase)
   const vEnv =
-    smoothstep(sat(relH / (0.15 * ceiling))) * (1 - smoothstep(sat((relH - ceiling * 0.4) / (ceiling * 0.6))))
-  const base = skyCascadeFbm(data, qx, qy, qz, timeSec)
-  const detail = skyFbm5(data, qx * 3 + 0.5, qy * 3 + 1.7, qz * 3 + 3.1, timeSec)
-  const detail2 = skyFbmDetail4(data, qx * 6.5 + 2.3, qy * 6.5 + 0.8, qz * 6.5 + 4.1, timeSec)
-  const erode = (detail * 0.7 + detail2 * 0.3) * 0.25 * (1 - smoothstep(sat((base - coverage) / 0.15)))
-  const shaped = base - erode
+    smoothstep(sat(relH / (0.15 * ceiling))) * (1 - smoothstep(sat((relH - ceiling * 0.5) / (ceiling * 0.5))))
+  const base = cloudTexAt(data, qx, qy, qz, BASE_TILE_Q, NOISE_CH_BASE, timeSec)
+  const detail = cloudTexAt(data, qx, qy, qz, DETAIL_TILE_Q, NOISE_CH_DETAIL, timeSec)
+  const edgeBand = 1 - smoothstep(sat((base - coverage - 0.04) / 0.26))
+  const shaped = base - (1 - detail) * 0.38 * edgeBand
   return smoothstep(sat((shaped - coverage) / 0.08)) * vEnv
 }
 

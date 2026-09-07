@@ -74,37 +74,6 @@ const NOISE_WRAP_SCALE: vec3f = vec3f(NOISE_WRAP, NOISE_WRAP, NOISE_WRAP); // no
 const PANO_Y_MIN: f32 = -0.05;
 const PANO_Y_MAX: f32 = 0.45;
 
-// Noise primitives
-
-fn noise3(p: vec3f) -> f32 {
-  let uv = vec3f(p.x + frame.time * 0.1, p.y, p.z + frame.time * 0.11) / NOISE_WRAP_SCALE;
-  return textureSampleLevel(noiseTex, noiseSampler, uv, 0.0).r;
-}
-
-fn fbm5(p_in: vec3f) -> f32 {
-  var f: f32 = 0.0;
-  var amp: f32 = 0.5;
-  var p = p_in;
-  for (var i: i32 = 0; i < 4; i++) {
-    f += noise3(p) * amp;
-    p = p * 2.02 + vec3f(5.1, 1.3, 3.7);
-    amp *= 0.5;
-  }
-  return f;
-}
-
-fn fbmDetail(p_in: vec3f) -> f32 {
-  var f: f32 = 0.0;
-  var amp: f32 = 0.5;
-  var p = p_in;
-  for (var i: i32 = 0; i < 3; i++) {
-    f += noise3(p) * amp;
-    p = p * 2.05 + vec3f(1.7, 9.2, 5.3);
-    amp *= 0.5;
-  }
-  return f;
-}
-
 // Preetham 1999 atmospheric scattering
 
 fn perez(cosTheta: f32, gamma: f32, cosGamma: f32,

@@ -38,6 +38,25 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> SkyVertexOutput {
 }
 
 // Cloud volume
+//
+// Shapes come from the pre-baked channels of the 3D noise texture
+// (cloud-noise.js): G = Perlin-Worley base fbm, B = Worley erosion fbm,
+// A = low-frequency value fbm. Whole octave stacks are baked into single
+// channels, so a density evaluation is 4 trilinear fetches instead of the
+// ~18 an in-shader fbm stack cost — which is what pays for the deeper march
+// and the multi-scattered lighting below.
+
+// Same apparent drift the old per-octave noise3 time offset gave, applied in
+// q-space before tiling so every channel advects at the same world speed.
+const CLOUD_DRIFT_Q: vec3f = vec3f(0.1, 0.0, 0.11);
+const BASE_TILE_Q: f32 = 8.0;     // 360 wu tile → billow masses ~90 wu down to ~11 wu
+const DETAIL_TILE_Q: f32 = 4.0;   // erosion billows ~22 wu down to ~5.6 wu
+const WOBBLE_TILE_Q: f32 = 23.0;  // lowest baked octave ≈ 260 wu, the old wobble scale
+
+fn cloudTexAt(q: vec3f, tileQ: f32) -> vec4f {
+  let uv = (q + CLOUD_DRIFT_Q * frame.time) / tileQ;
+  return textureSampleLevel(noiseTex, noiseSampler, uv, 0.0);
+}
 
 // Mesoscale weather field, returned in [0, 1] with mean 0.5.
 //
@@ -54,54 +73,21 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> SkyVertexOutput {
 // The mean of 0.5 keeps the modulation mean-preserving, so the keyframed
 // cloudCoverage still sets average sky cover.
 fn weatherField(qXZ: vec2f) -> f32 {
-  let cellsPerQ = 45.0 / sky.cloudClumpScale;
-  let boil = frame.time * 0.1;
-  var p = vec3f(qXZ.x + boil, 21.7, qXZ.y + boil * 1.1) * cellsPerQ;
-  var f: f32 = 0.0;
-  var amp: f32 = 0.5;
-  for (var i: i32 = 0; i < 3; i++) {
-    f += textureSampleLevel(noiseTex, noiseSampler, p / NOISE_WRAP_SCALE, 0.0).r * amp;
-    p = p * 2.03 + vec3f(3.3, 7.1, 1.9);
-    amp *= 0.5;
-  }
+  // The baked A-channel fbm's lowest octave is 4 cells per tile, so this tile
+  // size puts one weather cell at cloudClumpScale world units.
+  let tileQ = 4.0 * sky.cloudClumpScale / 45.0;
+  let a = cloudTexAt(vec3f(qXZ.x, 21.7, qXZ.y), tileQ).a;
   // An fbm sum is a narrow near-Gaussian about its mean; widen it so the field
   // saturates into solidly covered cells and genuinely open lanes.
-  return smoothstep(0.30, 0.70, f * (1.0 / 0.875));
-}
-
-// Bounded multiplicative cascade (Cahalan et al., "The albedo of fractal
-// stratocumulus clouds", J. Atmos. Sci. 51, 1994 — the standard model for cloud
-// liquid water). Water content is not a *sum* of scales: each scale modulates
-// the one above it, so real fields are intermittent — mostly thin, occasionally
-// very dense. An additive fbm is near-Gaussian by the central limit theorem
-// (measured skew −0.01 against this cascade's +0.56), which is why every puff
-// came out the same weight. Same octaves and lacunarity as fbm5, multiplied
-// rather than summed, then mapped affinely onto fbm5's mean and spread so the
-// keyframed cloudCoverage threshold still means what it did. The per-octave
-// weight decays steeply — the "bounded" in bounded cascade — because carrying
-// full intermittency down to the finest octave shatters the long horizon rays
-// into speckle rather than cloud.
-const FBM5_MEAN: f32 = 0.4682;
-const CASCADE_MEAN: f32 = 0.9976;
-const CASCADE_GAIN: f32 = 0.2695;
-
-fn cascadeFbm(p_in: vec3f) -> f32 {
-  var p = p_in;
-  var f: f32 = 1.0;
-  var weight: f32 = 0.85;
-  for (var i: i32 = 0; i < 4; i++) {
-    f *= 1.0 + weight * (2.0 * noise3(p) - 1.0);
-    p = p * 2.02 + vec3f(5.1, 1.3, 3.7);
-    weight *= 0.6;
-  }
-  return FBM5_MEAN + (f - CASCADE_MEAN) * CASCADE_GAIN;
+  return smoothstep(0.30, 0.70, a);
 }
 
 fn cloudDensity(p: vec3f) -> f32 {
   // Wobble the slab's base/top per column with slow, low-frequency noise so cloud
   // bottoms undulate past the nominal cloudBase plane instead of shearing flat.
   let margin = (sky.cloudTop - sky.cloudBase) * CLOUD_OVERSHOOT;
-  let wobble = (fbm5(p * (1.0 / 260.0) + vec3f(8.3, 0.0, 2.1)) - 0.47) * margin;
+  let q0 = p * (1.0 / 45.0);
+  let wobble = (cloudTexAt(q0 + vec3f(8.3, 0.0, 2.1), WOBBLE_TILE_Q).a - 0.5) * margin;
   let slabBase = sky.cloudBase + wobble;
   let slabTop = sky.cloudTop + wobble;
 
@@ -109,9 +95,8 @@ fn cloudDensity(p: vec3f) -> f32 {
     return 0.0;
   }
 
-  var q = p * (1.0 / 45.0);
   let windDrift = frame.windDirection * (frame.windStrength * frame.time * TIME_SCALE * 8.0);
-  q += vec3f(windDrift.x, 0.0, windDrift.y);
+  let q = q0 + vec3f(windDrift.x, 0.0, windDrift.y);
 
   // Coverage is a *clear* threshold, so a well-covered cell lowers it. Cells also
   // build deeper: convection towers where it is strong and flattens to wisps
@@ -121,15 +106,17 @@ fn cloudDensity(p: vec3f) -> f32 {
   let ceiling = mix(0.70, 1.0, weather);
 
   let relH = (p.y - slabBase) / (slabTop - slabBase);
-  let vEnv = smoothstep(0.0, 0.15 * ceiling, relH) * (1.0 - smoothstep(ceiling * 0.40, ceiling, relH));
+  let vEnv = smoothstep(0.0, 0.15 * ceiling, relH) * (1.0 - smoothstep(ceiling * 0.50, ceiling, relH));
 
-  let base = cascadeFbm(q);
+  let base = cloudTexAt(q, BASE_TILE_Q).g;
 
-  let detail = fbm5(q * 3.0 + vec3f(0.5, 1.7, 3.1));
-  let detail2 = fbmDetail(q * 6.5 + vec3f(2.3, 0.8, 4.1)) * 0.5;
-  let erode = (detail * 0.7 + detail2 * 0.3) * 0.25
-            * (1.0 - smoothstep(coverage, coverage + 0.15, base));
-  let shaped = base - erode;
+  // Worley erosion (Schneider): carve the *boundary band* of the base field
+  // with inverted cellular noise. Low-worley pockets cut in, high-worley cell
+  // centres survive as rounded lumps — the cauliflower edge. Interior stays
+  // solid because the band fades out well above the coverage threshold.
+  let detail = cloudTexAt(q, DETAIL_TILE_Q).b;
+  let edgeBand = 1.0 - smoothstep(coverage + 0.04, coverage + 0.30, base);
+  let shaped = base - (1.0 - detail) * 0.38 * edgeBand;
 
   let density = smoothstep(coverage, coverage + 0.08, shaped) * vEnv;
   return density;
@@ -140,13 +127,20 @@ fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
   return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
 }
 
+// Optical depth toward the light, marched with exponentially growing steps:
+// short steps resolve the crisp self-shadowing near the sample (where it
+// shapes the billow lighting), long steps still catch the bulk of a thick
+// cloud, so few samples cover the full distance without banding.
 fn shadowOD(pos: vec3f, sunDir: vec3f) -> f32 {
-  let SH_DIST: f32 = 24.0;
-  let stepSize = SH_DIST / f32(sky.cloudShadowSteps);
+  let SH_DIST: f32 = 28.0;
   var od: f32 = 0.0;
+  var prevT: f32 = 0.0;
   for (var i: i32 = 0; i < i32(sky.cloudShadowSteps); i++) {
-    let sp = pos + sunDir * (f32(i) + 0.5) * stepSize;
-    od += cloudDensity(sp) * stepSize;
+    let frac = (f32(i) + 1.0) / f32(sky.cloudShadowSteps);
+    let t = SH_DIST * frac * frac;
+    let sp = pos + sunDir * (0.5 * (prevT + t));
+    od += cloudDensity(sp) * (t - prevT);
+    prevT = t;
   }
   return od;
 }
@@ -177,17 +171,39 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
   let warmth = smoothstep(0.0, 0.45, sunY);
   let sunCol = mix(sky.horizonColor * 1.5, vec3f(1.02, 1.00, 0.97), warmth);
 
-  // Dual-lobe Henyey–Greenstein (Wrenninge / Schneider): a strong forward lobe
-  // gives the sunward silver lining, a weak back lobe keeps anti-solar cloud
-  // faces softly filled instead of flat.
-  let cosTheta = dot(rd, normalize(sunDir));
-  let hgBoost = mix(henyeyGreenstein(cosTheta, -0.2), henyeyGreenstein(cosTheta, 0.5), 0.7) * 4.0 * PI;
-
   let moonBlend = smoothstep(0.0, -0.2, sunY);
   let moonDir = normalize(vec3f(-sunDir.x, -sunDir.y + 0.1, sunDir.z));
   let lightDir = normalize(mix(sunDir, moonDir, moonBlend));
   let lightY = mix(sunY, moonDir.y, moonBlend) - 0.2;
   let lightCol = mix(sunCol, vec3f(0.72, 0.78, 1.0) * 0.12, moonBlend);
+
+  // Multiple-scattering approximation (Wrenninge, "Oz: The Great and Volumetric",
+  // SIGGRAPH 2013): each octave sees weaker extinction, a flatter phase and less
+  // energy, which is what keeps thick cloud cores luminous white instead of the
+  // battleship grey single scattering produces. cosTheta is constant along the
+  // ray, so the per-octave dual-lobe Henyey–Greenstein (a strong forward lobe
+  // for the sunward silver lining, a weak back lobe so anti-solar faces stay
+  // softly filled) is hoisted out of the march.
+  const MS_OCTAVES: i32 = 3;
+  const MS_EXTINCTION: f32 = 0.4;
+  const MS_ENERGY: f32 = 0.55;
+  const MS_PHASE: f32 = 0.6;
+  let cosTheta = dot(rd, normalize(sunDir));
+  var msPhase: array<f32, MS_OCTAVES>;
+  var msSigma: array<f32, MS_OCTAVES>;
+  var msGain: array<f32, MS_OCTAVES>;
+  var g: f32 = 1.0;
+  var sigmaScale: f32 = 1.0;
+  var gain: f32 = 1.0;
+  for (var o: i32 = 0; o < MS_OCTAVES; o++) {
+    let hg = mix(henyeyGreenstein(cosTheta, -0.2 * g), henyeyGreenstein(cosTheta, 0.5 * g), 0.7) * 4.0 * PI;
+    msPhase[o] = 0.72 + 0.28 * hg;
+    msSigma[o] = sky.cloudSigmaE * sigmaScale;
+    msGain[o] = gain;
+    g *= MS_PHASE;
+    sigmaScale *= MS_EXTINCTION;
+    gain *= MS_ENERGY;
+  }
 
   let slopeFactor = clamp(abs(lightDir.y) * 10.0, 0.0, 1.0);
   let signLY = select(1.0, -1.0, lightDir.y + 0.001 < 0.0);
@@ -205,25 +221,29 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
     }
 
     let od = shadowOD(pos, shadowDir);
-    let shadowAtt = exp(-od * sky.cloudSigmaE);
     // Beer–powder (Schneider, "Real-Time Volumetric Cloudscapes of Horizon:
     // Zero Dawn"): light in optically thin regions has not yet in-scattered, so
-    // lit cloud edges darken into the cauliflower look. Floored at 0.4 so thin
+    // lit cloud edges darken into the cauliflower look. Floored at 0.35 so thin
     // wisps dim rather than go black.
-    let powder = mix(0.4, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE));
+    let powder = mix(0.35, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE));
+
+    var msLight: f32 = 0.0;
+    for (var o: i32 = 0; o < MS_OCTAVES; o++) {
+      msLight += msGain[o] * exp(-od * msSigma[o]) * msPhase[o];
+    }
 
     let relH = clamp((pos.y - sky.cloudBase) / (sky.cloudTop - sky.cloudBase), 0.0, 1.0);
-    let topSoften = 1.0 - 0.22 * pow(relH * shadowAtt, 2.5);
 
     let litScale = select(0.4 * sin(clamp(-lightY / 0.15, 0.0, 1.0) * PI), lightY, lightY >= 0.0);
 
-    let Ldirect = lightCol * litScale
-                * shadowAtt * powder
-                * (0.72 + 0.28 * hgBoost) * 1.05
-                * topSoften;
+    let Ldirect = lightCol * litScale * msLight * powder;
 
-    let Lambient = sky.zenithColor * (0.12 + 0.28 * relH)
-                 + sky.horizonColor * (0.15 + 0.18 * (1.0 - relH));
+    // Sky ambient attenuated by the depth already accumulated toward the light:
+    // sunlit tops keep the full sky term, deep undersides fall toward a dim
+    // floor — the vertical light gradient that makes a cumulus read as a mass.
+    let ambientAtt = mix(0.25, 1.0, exp(-od * sky.cloudSigmaE * 0.6));
+    let Lambient = (sky.zenithColor * (0.12 + 0.30 * relH)
+                  + sky.horizonColor * (0.14 + 0.18 * (1.0 - relH))) * ambientAtt;
 
     let Lsample = Ldirect + Lambient;
     let extinction = rho * sky.cloudSigmaE * stepSize;

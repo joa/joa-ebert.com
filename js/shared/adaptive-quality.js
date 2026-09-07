@@ -24,15 +24,15 @@ const PHASE_SPLIT = 0.6
 const QUALITY_PARAMS = S.lowSpec
   ? [
       { key: "godRaySteps", min: 16, target: 32, targetAt: PHASE_SPLIT, max: 48 },
-      { key: "cloudSteps", min: 6, target: 10, targetAt: 0.35, max: 20 },
+      { key: "cloudSteps", min: 6, target: 14, targetAt: 0.35, max: 24 },
       { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
       { key: "mountainSteps", min: 8, target: 16, targetAt: 0.1, max: 16 },
       { key: "shadowGrassDensity", min: 0.5, target: 1, targetAt: PHASE_SPLIT, max: 1, float: true },
     ]
   : [
       { key: "godRaySteps", min: 32, target: 48, targetAt: PHASE_SPLIT, max: 64 },
-      { key: "cloudSteps", min: 6, target: 12, targetAt: 0.35, max: 32 },
-      { key: "cloudShadowSteps", min: 2, target: 3, targetAt: PHASE_SPLIT, max: 3 },
+      { key: "cloudSteps", min: 6, target: 20, targetAt: 0.35, max: 40 },
+      { key: "cloudShadowSteps", min: 2, target: 4, targetAt: PHASE_SPLIT, max: 5 },
       { key: "mountainSteps", min: 8, target: 64, targetAt: 0.1, max: 64 },
       { key: "shadowGrassDensity", min: 0.5, target: 1, targetAt: PHASE_SPLIT, max: 1, float: true },
     ]
