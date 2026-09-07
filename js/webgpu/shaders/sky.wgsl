@@ -223,9 +223,11 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
     let od = shadowOD(pos, shadowDir);
     // Beer–powder (Schneider, "Real-Time Volumetric Cloudscapes of Horizon:
     // Zero Dawn"): light in optically thin regions has not yet in-scattered, so
-    // lit cloud edges darken into the cauliflower look. Floored at 0.35 so thin
-    // wisps dim rather than go black.
-    let powder = mix(0.35, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE));
+    // lit cloud edges darken into the cauliflower look. It only applies to
+    // faces seen from the lit side (cosTheta → −1); on backlit faces it would
+    // kill the silver lining and, at od ≈ 0, dim sunlit tops to grey.
+    let powderRaw = mix(0.45, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE));
+    let powder = mix(1.0, powderRaw, clamp((1.0 - cosTheta) * 0.5, 0.0, 1.0));
 
     var msLight: f32 = 0.0;
     for (var o: i32 = 0; o < MS_OCTAVES; o++) {
@@ -236,12 +238,12 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
 
     let litScale = select(0.4 * sin(clamp(-lightY / 0.15, 0.0, 1.0) * PI), lightY, lightY >= 0.0);
 
-    let Ldirect = lightCol * litScale * msLight * powder;
+    let Ldirect = lightCol * litScale * msLight * powder * 1.35;
 
     // Sky ambient attenuated by the depth already accumulated toward the light:
     // sunlit tops keep the full sky term, deep undersides fall toward a dim
     // floor — the vertical light gradient that makes a cumulus read as a mass.
-    let ambientAtt = mix(0.25, 1.0, exp(-od * sky.cloudSigmaE * 0.6));
+    let ambientAtt = mix(0.30, 1.0, exp(-od * sky.cloudSigmaE * 0.6));
     let Lambient = (sky.zenithColor * (0.12 + 0.30 * relH)
                   + sky.horizonColor * (0.14 + 0.18 * (1.0 - relH))) * ambientAtt;
 
