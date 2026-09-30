@@ -20,15 +20,8 @@ const BURST_HEIGHT_MIN = 4
 const BURST_HEIGHT_MAX = 7
 const SPREAD_XZ = 5
 
-// Red / white / blue / gold
-const COLORS = [
-  [1.0, 0.15, 0.1],
-  [1.0, 1.0, 1.0],
-  [0.15, 0.45, 1.0],
-  [1.0, 0.8, 0.15],
-]
-
 export class FireworksSystem {
+  #colors
   sparklePositions = new Float32Array(MAX_SPARKLES * 3)
   sparkleColors = new Float32Array(MAX_SPARKLES * 4) // RGB + life [0,1] as alpha
   sparkleCount = 0
@@ -49,6 +42,11 @@ export class FireworksSystem {
   // Ring-buffer cursor for sparkle pool
   #sparkleHead = 0
   #nextLaunchIn = 0.3
+
+  // colors: array of linear RGB triples, one picked per burst
+  constructor(colors) {
+    this.#colors = colors
+  }
 
   update(dtS, timeInfo) {
     const dt = Math.min(dtS, 0.033)
@@ -122,7 +120,7 @@ export class FireworksSystem {
   }
 
   #burst(rocket) {
-    const color = COLORS[Math.floor(Math.random() * COLORS.length)]
+    const color = this.#colors[Math.floor(Math.random() * this.#colors.length)]
     for (let k = 0; k < SPARKLES_PER_BURST; k++) {
       const i = this.#sparkleHead % MAX_SPARKLES
       this.#sparkleHead++
