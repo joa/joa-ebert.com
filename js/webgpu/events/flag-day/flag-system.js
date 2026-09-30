@@ -1,13 +1,12 @@
 // Flag System
 // ###########
 //
-// CPU Verlet cloth simulation for the US flag, streamed to the GPU each frame.
+// CPU Verlet cloth simulation for a national flag, streamed to the GPU each frame.
 // The flag mesh is 20×14 grid in world space.  The left column is pinned to
 // the pole; wind + gravity drive the cloth movement.
 
 export const FLAG_POS = Object.freeze({ x: -15, y: 0, z: -3 }) // pole base world position
-const FLAG_WIDTH = 1.9 // wu
-const FLAG_HEIGHT = 1.0 // wu (10:19 ratio)
+const FLAG_HEIGHT = 1.0 // wu; width follows the flag's aspect ratio
 const POLE_HEIGHT = 4.0 // wu
 const FLAG_ATTACH_Y = POLE_HEIGHT * 0.92 // where left edge attaches
 
@@ -17,7 +16,6 @@ const VERT_COUNT = COLS * ROWS
 const FLOATS_PER_VERT = 8 // x y z nx ny nz u v
 const STRIDE_BYTES = FLOATS_PER_VERT * 4
 
-const REST_DX = FLAG_WIDTH / (COLS - 1)
 const REST_DY = FLAG_HEIGHT / (ROWS - 1)
 
 // Spring stiffness / iteration count
@@ -41,11 +39,14 @@ export class FlagSystem {
   #pos = new Float32Array(VERT_COUNT * 3)
   #prev = new Float32Array(VERT_COUNT * 3)
   #time = 0
+  #restDX
 
   #indexCount = 0
   indices = null // Uint16Array — built once
 
-  constructor() {
+  // aspectRatio: flag width / height (US 19:10, Germany 5:3)
+  constructor(aspectRatio) {
+    this.#restDX = (FLAG_HEIGHT * aspectRatio) / (COLS - 1)
     this.#buildMesh()
   }
 
@@ -61,7 +62,7 @@ export class FlagSystem {
     for (let row = 0; row < ROWS; row++) {
       for (let col = 0; col < COLS; col++) {
         const i = this.#idx(col, row)
-        const x = px + col * REST_DX
+        const x = px + col * this.#restDX
         const y = py - row * REST_DY
         const z = pz
 
@@ -185,8 +186,8 @@ export class FlagSystem {
     }
 
     // Constraint relaxation
-    const diagLen = Math.sqrt(REST_DX * REST_DX + REST_DY * REST_DY)
-    const bendDX = REST_DX * 2
+    const diagLen = Math.sqrt(this.#restDX * this.#restDX + REST_DY * REST_DY)
+    const bendDX = this.#restDX * 2
     const bendDY = REST_DY * 2
 
     for (let iter = 0; iter < CONSTRAINT_ITERS; iter++) {
@@ -194,7 +195,7 @@ export class FlagSystem {
         for (let col = 0; col < COLS; col++) {
           const i = this.#idx(col, row)
           // Structural: right
-          if (col < COLS - 1) this.#applyConstraint(i, this.#idx(col + 1, row), REST_DX, STIFFNESS_STRUCTURAL)
+          if (col < COLS - 1) this.#applyConstraint(i, this.#idx(col + 1, row), this.#restDX, STIFFNESS_STRUCTURAL)
           // Structural: down
           if (row < ROWS - 1) this.#applyConstraint(i, this.#idx(col, row + 1), REST_DY, STIFFNESS_STRUCTURAL)
           // Shear: diagonal ↘

@@ -4,6 +4,11 @@ const EVENTS = [
     activeRanges: [{ month: 7, dayStart: 1, dayEnd: 7 }],
     loader: () => import("./fourth-of-july/index.js"),
   },
+  {
+    id: "german-unity-day",
+    activeRanges: [{ month: 10, dayStart: 1, dayEnd: 7 }],
+    loader: () => import("./german-unity-day/index.js"),
+  },
   /*{
     id: "world-cup-2026",
     activeRanges: [
