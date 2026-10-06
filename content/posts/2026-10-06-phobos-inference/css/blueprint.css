@@ -1,0 +1,386 @@
+/* Blueprint figures: brand hairlines drawn straight on the page background.
+ * One legend for every figure: brand = working, ink = look here, amber = trouble or cost, dim = idle.
+ * JS never writes a color; every visual state is a class. */
+
+.bp {
+  --bp-line: var(--color-brand);
+  /* On the light page brand-dk is darker than brand, which would make idle louder than working */
+  --bp-dim: light-dark(color-mix(in srgb, var(--color-brand-dk) 65%, var(--color-surface)), var(--color-brand-dk));
+  --bp-ink: var(--color-fg);
+  --bp-label: var(--color-muted);
+  --bp-fill: light-dark(rgba(61, 96, 112, 0.05), rgba(92, 220, 255, 0.025));
+  --bp-fill-on: light-dark(rgba(61, 96, 112, 0.16), rgba(92, 220, 255, 0.16));
+  --bp-glow: light-dark(rgba(61, 96, 112, 0.25), rgba(92, 220, 255, 0.5));
+  --bp-warn: light-dark(#9a4f1c, #ffb56a);
+  --bp-warn-fill: light-dark(rgba(154, 79, 28, 0.12), rgba(255, 181, 106, 0.14));
+  --bp-warn-fill-on: light-dark(rgba(154, 79, 28, 0.26), rgba(255, 181, 106, 0.3));
+  --bp-warn-glow: light-dark(rgba(154, 79, 28, 0.3), rgba(255, 181, 106, 0.45));
+  margin: 1.5rem 0 0.5rem;
+}
+
+/* Head row: tag on the left, live readout on the right (under the tag when narrow) */
+
+.bp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.bp-tag {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--bp-line);
+  text-shadow: 0 0 6px var(--bp-glow);
+}
+
+.bp-readout,
+.bp-aside {
+  flex: 1 1 18rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-wrap: balance;
+}
+
+.bp-readout {
+  /* Two lines reserved, so the drawing doesn't jump when a longer readout wraps */
+  min-height: 3em;
+  color: var(--bp-ink);
+}
+
+.bp-aside {
+  display: block;
+  margin: -0.25rem 0 0.5rem;
+  color: var(--bp-label);
+}
+
+.bp[data-layout="narrow"] .bp-readout,
+.bp[data-layout="narrow"] .bp-aside {
+  flex-basis: 100%;
+  text-align: left;
+}
+
+.bp-noscript {
+  font-size: 12px;
+  color: var(--bp-label);
+}
+
+/* The site sizes inline code for body text, which towers over a caption; identifiers also shouldn't break */
+.bp-figure figcaption code {
+  font-size: 1em;
+  white-space: nowrap;
+}
+
+/* Drawing */
+
+.bp-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.bp-svg * {
+  transition:
+    fill 250ms ease-out,
+    stroke 250ms ease-out,
+    opacity 250ms ease-out;
+}
+
+.bp-box {
+  fill: var(--bp-fill);
+  stroke: var(--bp-dim);
+  stroke-width: 1.2;
+}
+
+.bp-wire {
+  fill: none;
+  stroke: var(--bp-dim);
+  stroke-width: 1.5;
+}
+
+.bp-bracket {
+  fill: none;
+  stroke: var(--bp-label);
+  stroke-width: 1;
+}
+
+.bp-texture {
+  fill: none;
+  stroke: var(--bp-dim);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+.bp-packet {
+  fill: var(--bp-ink);
+  stroke: none;
+  filter: drop-shadow(0 0 4px var(--bp-glow));
+}
+
+.bp-text,
+.bp-cap,
+.bp-num {
+  fill: var(--bp-label);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.bp-cap {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.bp-num {
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+/* States. Order matters: a later state wins where two set the same property. */
+
+.is-dashed {
+  stroke-dasharray: 3 2.5;
+}
+
+.bp-wire.is-emph,
+.bp-bracket.is-emph {
+  stroke-width: 2;
+}
+
+.bp-box.is-dashed {
+  fill: none;
+}
+
+.bp-box.is-on {
+  stroke: var(--bp-line);
+  fill: var(--bp-fill-on);
+  filter: drop-shadow(0 0 4px var(--bp-glow));
+}
+
+.bp-wire.is-on {
+  stroke: var(--bp-line);
+  filter: drop-shadow(0 0 4px var(--bp-glow));
+}
+
+.bp-bracket.is-on,
+.bp-texture.is-on {
+  stroke: var(--bp-line);
+}
+
+.bp-box.is-hot {
+  stroke: var(--bp-ink);
+  fill: var(--bp-fill-on);
+  filter: drop-shadow(0 0 4px var(--bp-glow));
+}
+
+.bp-wire.is-hot,
+.bp-bracket.is-hot {
+  stroke: var(--bp-ink);
+}
+
+.bp-box.is-warn {
+  stroke: var(--bp-warn);
+  fill: var(--bp-warn-fill);
+  filter: none;
+}
+
+.bp-wire.is-warn,
+.bp-bracket.is-warn,
+.bp-texture.is-warn {
+  stroke: var(--bp-warn);
+  filter: none;
+}
+
+.bp-packet.is-warn {
+  fill: var(--bp-warn);
+  filter: drop-shadow(0 0 4px var(--bp-warn-glow));
+}
+
+/* Amber that asks to be looked at: trouble, right now */
+.bp-box.is-warn.is-hot {
+  fill: var(--bp-warn-fill-on);
+  filter: drop-shadow(0 0 4px var(--bp-warn-glow));
+}
+
+.bp-text.is-on,
+.bp-cap.is-on,
+.bp-num.is-on {
+  fill: var(--bp-line);
+}
+
+.bp-text.is-hot,
+.bp-cap.is-hot,
+.bp-num.is-hot {
+  fill: var(--bp-ink);
+}
+
+.bp-text.is-warn,
+.bp-cap.is-warn,
+.bp-num.is-warn {
+  fill: var(--bp-warn);
+}
+
+.is-idle {
+  opacity: 0.5;
+}
+
+.is-hidden {
+  opacity: 0;
+}
+
+/* Controls */
+
+.bp-controls,
+.bp-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.bp-controls {
+  margin-top: 0.75rem;
+}
+
+/* Extra air between groups; narrow rows wrap by group instead, and a margin would indent them */
+.bp[data-layout="wide"] .bp-group + .bp-group,
+.bp[data-layout="wide"] .bp-group + .bp-btn,
+.bp[data-layout="wide"] .bp-btn[data-group] + .bp-btn[data-action] {
+  margin-left: 0.625rem;
+}
+
+.bp-btn {
+  min-height: 32px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--bp-dim);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--bp-line);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    border-color 250ms ease-out,
+    background-color 250ms ease-out,
+    color 250ms ease-out;
+}
+
+.bp-btn:hover {
+  border-color: var(--bp-line);
+}
+
+.bp-btn[aria-pressed="true"] {
+  border-color: var(--bp-line);
+  background: var(--bp-fill-on);
+  color: var(--bp-ink);
+}
+
+/* Identifiers keep their case inside the uppercase labels */
+.bp-btn code,
+.bp-range-label code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.bp-btn:focus-visible,
+.bp-range:focus-visible {
+  outline: 2px solid var(--bp-line);
+  outline-offset: 2px;
+}
+
+.bp-range-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 32px;
+  color: var(--bp-line);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.bp-range {
+  width: min(16rem, 100%);
+  accent-color: var(--bp-line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bp-svg *,
+  .bp-btn {
+    transition: none;
+  }
+}
+
+/* fig: qdot-mapping */
+
+/* The scale stop flashes every 140 ms, faster than the shared 250 ms fade could show */
+#fig-qdot-mapping .is-instant {
+  transition: none;
+}
+
+/* Matrix rows and output cells sit one unit apart; full-weight outlines would fuse them into one block */
+#fig-qdot-mapping .is-hairline {
+  stroke-width: 0.6;
+}
+
+/* fig: copy-queue */
+
+/* Spinning threads poll, they don't sleep: finer dashes than an idle .is-dashed box, no fill */
+#fig-copy-queue .bp-box.is-fine {
+  fill: none;
+  stroke-dasharray: 1.5 2;
+}
+
+/* The before readout wraps to three lines beside the tag (and on small phones), the after one to two:
+ * reserve three so the drawing doesn't jump when the tour switches paths */
+#fig-copy-queue .bp-readout {
+  min-height: 4.5em;
+}
+
+/* fig: exact-size-pool */
+
+/* A running request's readout wraps to three lines in both layouts, the end of a run to two:
+ * reserve three so the drawing doesn't jump when a run starts or ends */
+#fig-exact-size-pool .bp-readout {
+  min-height: 4.5em;
+}
+
+/* fig: vram-residency */
+
+/* Past the edge the readout wraps to three lines on phones, and on wide screens once more than the head
+ * is out: reserve three so the drawing doesn't jump while the intro or a drag crosses the edge */
+#fig-vram-residency .bp-readout {
+  min-height: 4.5em;
+}
+
+/* fig: bandwidth-bound */
+
+/* Both phases' readouts wrap to three lines on most widths: reserve three so switching doesn't jump */
+#fig-bandwidth-bound .bp-readout {
+  min-height: 4.5em;
+}
+
+/* fig: hadamard-rotation */
+
+/* Both readouts wrap to three lines on most widths: reserve three so switching doesn't jump */
+#fig-hadamard-rotation .bp-readout {
+  min-height: 4.5em;
+}

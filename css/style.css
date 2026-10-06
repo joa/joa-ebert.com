@@ -409,6 +409,28 @@ header.canvas-expanded {
     cursor: pointer;
   }
 
+  .post-body table {
+    @apply w-full my-6 text-sm border-collapse table-fixed;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .post-body th {
+    @apply text-left font-normal py-2 pr-4 border-b border-edge;
+    background: var(--g-heading-3, var(--g-heading));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .post-body td {
+    @apply py-2 pr-4 align-top border-b border-edge-soft;
+  }
+
+  .post-body tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
   .post-cover-figure {
     @apply mb-8;
   }
