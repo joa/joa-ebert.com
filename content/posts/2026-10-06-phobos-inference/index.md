@@ -26,6 +26,13 @@ Phobos does very well with quantizations in the 1-bit realm. It runs PrismML's T
 
 You can grab your copy of Phobos on [GitHub](https://github.com/joa/phobos-lang/releases).
 
+<figure>
+  <video src="images/full_run.webm" controls muted loop playsinline preload="metadata"></video>
+  <figcaption>
+
+A full run of Phobos, sped up 2×.</figcaption>
+</figure>
+
 This post is a story about moving from a compiler to an inference engine. Chasing (the wrong) benchmarks and optimizing your own JIT-compiled kernels. Phobos inference runs entirely on Phobos kernels that are compiled at runtime.
 
 ## The Curse of Curiosity
