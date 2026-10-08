@@ -1,18 +1,18 @@
 ---
 title: "Filling in the blanks: Inference using Phobos"
 date: "2026-10-06"
-summary: "My toy kernel language now runs LLMs, every kernel compiled at runtime from Phobos. On a seven-year-old RTX 2080 SUPER it decodes as fast as llama.cpp or faster on all but one model I tried, including a 35B mixture of experts that doesn't fit on the card. Most of the speed came from fighting memory, not writing kernels. And there's a first release."
+summary: "My toy kernel language now runs LLMs, every kernel compiled at runtime from Phobos. On a seven-year-old RTX 2080 SUPER it decodes as fast as llama.cpp or faster on all but two models I tried, including a 35B mixture of experts. Most of the speed came from fighting memory, not writing kernels. And there's a first release."
 description: "Running LLMs on Phobos, a tiny tile-based kernel language: quantized kernels, a graph IR, Windows VRAM residency, an elastic MoE expert cache over PCIe and a replayed coding-agent benchmark, measured against llama.cpp on an RTX 2080 SUPER."
 tags: ["compiler", "gpu", "mlir", "llvm", "inference", "quantization", "ai"]
 styles:
   - css/blueprint.css
 scripts:
   - js/main.js
-toc: false
+toc: true
 draft: false
 ---
 
-> **TLDR:** Phobos, the tiny kernel language from my last post[^1], now runs LLMs. A GGUF file goes in, tokens come out, and every kernel in between is compiled at runtime from Phobos. No cuBLAS, no CUDA toolkit, just the driver. On my old RTX 2080 SUPER it generates text as fast as llama.cpp or faster on every model I tried but one: 328 against 260 tokens a second on a 0.8B model, and 55 against 31 on a 35B mixture of experts that doesn't even fit on the card, with llama.cpp at its best settings. The one is a ternary 27B, where PrismML's newest llama.cpp fork now decodes 8% faster than Phobos (49 against 45), though Phobos still reads prompts 1.27 times faster. When the desktop takes 2 GiB away mid-session, Phobos keeps three quarters of its decode speed and llama.cpp keeps 30%. Prompt processing on the small models still loses, at 60 to 80% of llama.cpp. Oh, and there's a first release now.
+> **TLDR:** Phobos, the tiny kernel language from my last post[^1], now runs LLMs end-to-end. Every kernel is compiled at runtime from Phobos. No cuBLAS or CUDA toolkit, just the driver. On my old RTX 2080 SUPER it generates text as fast as llama.cpp or faster on every model I tried but two: 324 against 247 tokens a second on a 0.8B model, and 54 against 30 on a 35B mixture of experts. The two are a ternary 27B, where PrismML's newest llama.cpp fork now decodes 7% faster than Phobos (49 against 45), though Phobos still reads prompts 1.24 times faster, and GLM-4.6V-Flash, where llama.cpp decodes 6% faster. When the desktop takes 2 GiB away mid-session, Phobos keeps three quarters of its decode speed thanks to its dynamic caching strategy and llama.cpp keeps 30%. Prompt processing on the small models still loses, at 60 to 80% of llama.cpp. Also, there's a first release now.
 
 ---
 
@@ -100,7 +100,7 @@ To produce one token, a decode step must read every weight in the model once and
 
 My GPU can do about 11 TFLOP/s. Memory bandwidth was measured at 400 GB/s. 11 trillion ops/s divided by 400 billion bytes/s is **27.5**. The advertised speeds of the card are a bit different and would yield you **22.5**. For the purpose of this blog post we take the middle: **25** operations per byte is what you need to keep the math units of the GPU busy. But we use only 2 operations per byte. Ergo the math units spend most of the time waiting for fresh data. This is why people say decode is memory-bound.
 
-The ceiling for token generation is easy to compute, too. If you have a model, like our friend Qwen3.5-0.8B, that reads 0.83 GB per token, you can compute `0.83 GB / 400 GB/s`, and that's about 2ms, or 500 tokens a second. This is our physical limit. Phobos is at 328 tokens a second today.
+The ceiling for token generation is easy to compute, too. If you have a model, like our friend Qwen3.5-0.8B, that reads 0.83 GB per token, you can compute `0.83 GB / 400 GB/s`, and that's about 2ms, or 500 tokens a second. This is our physical limit. Phobos is at 324 tokens a second today.
 
 Prompt processing is the opposite. For 512 tokens, you reuse every weight 512 times. This is math-heavy stuff where you want to saturate the tensor cores. Let's look at decode first.
 
@@ -127,7 +127,7 @@ After that came some well-known launch optimizations. For example, a complete pa
 | replay the pass as one CUDA graph        | 170      |
 | stop allocating while recording (it did 5000 allocations a step) | 191 |
 | a dozen small fusions                    | 260      |
-| today: a newer driver, plus everything that follows in this post | 328 |
+| today: a newer driver, plus everything that follows in this post | 324 |
 
 ## Opening the Floodgates
 
@@ -203,7 +203,7 @@ PrismML released Ternary-Bonsai-2-27B just in time. Of course, I wanted to see i
 
 Since I had hill-climbed on 1-bit formats early on, I had high hopes. The first working version was ahead from the start, at 34 tokens a second against the fork's 29. One trick: the rotated activation can be computed once and shared by every projection that reads the same input.
 
-PrismML's latest build (b10754) does that too, and it shows: it decodes at 48.8 tokens a second against Phobos's 45.2. Phobos still processes prompts 1.27 times faster.
+PrismML's latest build (b10754) does that too, and it shows: it decodes at 48.5 tokens a second against Phobos's 45.2. Phobos still processes prompts 1.24 times faster.
 
 <figure class="bp-figure">
 {{% include "fig-hadamard-rotation.md" %}}
@@ -214,8 +214,8 @@ Then several "human errors" needed to be removed. Every kernel launch was readin
 
 | Ternary-Bonsai-2-27B-PTQ1_0 | Phobos | llama.cpp (PrismML fork) |
 | --- | ---: | ---: |
-| prompt, 128 tokens | 599.1 | 472.4 |
-| decode, 128 tokens | 45.2 | 48.8 |
+| prompt, 128 tokens | 584.0 | 469.8 |
+| decode, 128 tokens | 45.2 | 48.5 |
 
 ## Q4_K_M
 
@@ -234,9 +234,9 @@ Fusing the whole multilayer perceptron (MLP) into one persistent kernel provided
 
 | Qwen3.5-4B-Q4_K_M | Phobos | llama.cpp |
 | --- | ---: | ---: |
-| prompt, 128 tokens | 2308 | 2318 |
-| prompt, 512 tokens | 2353 | 2957 |
-| decode, 128 tokens | 113.3 | 110.1 |
+| prompt, 128 tokens | 2305 | 2296 |
+| prompt, 512 tokens | 2372 | 2956 |
+| decode, 128 tokens | 111.8 | 106.5 |
 
 This is now parity on llama.cpp's best format for decode. Longer prompts are still losing.
 
@@ -278,7 +278,7 @@ So the copy engine had to go from the critical path. The 8 KiB still have to cro
 
 And nobody waits politely anymore. CPU threads spin instead of yielding, and on the GPU a tiny kernel spins on a flag in host memory until the CPU's results are in. Burning a core to save a millisecond. Worth it.
 
-Decode went from 16 to 55 tokens a second, 1.7 times what copying alone manages. Again: memory and scheduling, not math. The CPU now computes every miss of the current token, which takes about a quarter of the time a copy would. On top of that, each layer copies its most heavily weighted miss to the card, so it's a hit for the next token. 
+Decode went from 16 to 54 tokens a second, 1.7 times what copying alone manages. That's memory and scheduling, not math. The CPU now computes every miss of the current token, which takes about a quarter of the time a copy would. On top of that, each layer copies its most heavily weighted miss to the card, so it's a hit for the next token. 
 
 <figure class="bp-figure">
 {{% include "fig-copy-queue.md" %}}
@@ -287,9 +287,9 @@ Decode went from 16 to 55 tokens a second, 1.7 times what copying alone manages.
 
 | Qwen3.6-35B-A3B-UD-Q4_K_M | Phobos | llama.cpp `-ncmoe 31 -t 8` |
 | --- | ---: | ---: |
-| prompt, 128 tokens | 329.3 | 75.7 |
-| prompt, 512 tokens | 598.8 | 256.9 |
-| decode, 128 tokens | 55.5 | 31.4 |
+| prompt, 128 tokens | 311.5 | 76.3 |
+| prompt, 512 tokens | 577.9 | 257.6 |
+| decode, 128 tokens | 54.3 | 29.9 |
 
 What I really like about this: there's nothing to configure. Phobos sizes the expert cache by whatever is free on the card and checks again every 16 tokens. When less than 512 MiB are left, because you open an Electron app or the context grows, it evicts experts until 1 GiB is free again. When the memory comes back, the cache grows again. For fairness, the benchmark ran without contention, of course. What happens when there is contention comes further down. 
 
@@ -308,16 +308,30 @@ The reason was quite stupid though. The memory pool reused a buffer only for a r
 
 A benchmark based on actual use revealed even more issues. The sampler used to sort the vocabulary for every token, which is something a greedy decode benchmark never does. Agents also re-send the entire transcript every turn and ideally you only process what's new (prefix caching). This is a bit harder with Qwen's DeltaNet blocks. 
 
-Ultimately, I created a benchmark suite (oh, the irony!) that runs `pi` through a proxy to record all interactions when working on a defined [set of problems](https://github.com/joa/phobos-lang/tree/main/bench) like fixing a bug in some code. Then the recording is replayed to each engine with every answer capped at the recorded length. This means we have the same prompts in the same order. Both engines keep their session between requests and rewind it to where the next prompt differs. So far, the benchmark suite has only one defined task: a bug in a small JavaScript file. This yields 8 requests, three rounds each:
+Ultimately, I created a benchmark suite (oh, the irony!) that runs `pi` through a proxy to record all interactions when working on a defined [set of problems](https://github.com/joa/phobos-lang/tree/main/bench) like fixing a bug in some code. Then the recording is replayed to each engine with every answer capped at the recorded length. This means we have the same prompts in the same order. Both engines keep their session between requests. There are three tasks so far, each testing something else. No thinking, three rounds each:
 
-| Replaying a pi session, Qwen3.6-35B-A3B | wall time | prompt | decode |
-| --- | ---: | ---: | ---: |
-| llama.cpp `-ncmoe 31 -t 8` | 71.9 s | 132 t/s | 29.9 t/s |
-| Phobos | 44.0 s | 237 t/s | 42.3 t/s |
+| Replaying pi sessions, Qwen3.6-35B-A3B | engine | wall time | prompt | decode |
+| --- | --- | ---: | ---: | ---: |
+| `fib`, 6 requests | llama.cpp `-ncmoe 31 -t 8` | 53.2 s | 105 t/s | 30.7 t/s |
+| | Phobos | 26.9 s | 254 t/s | 42.3 t/s |
+| `law`, 2 requests | llama.cpp `-ncmoe 31 -t 8` | 66.6 s | 148 t/s | 30.0 t/s |
+| | Phobos | 47.2 s | 246 t/s | 42.5 t/s |
+| `pelican`, 2 requests | llama.cpp `-ncmoe 31 -t 8` | 132.8 s | 149 t/s | 29.3 t/s |
+| | Phobos | 81.2 s | 347 t/s | 47.4 t/s |
 
-With thinking turned on, both take about two and a half minutes wall time. There's a little caveat though: the replay caps every answer at its recorded length, but it can't make an engine keep going. llama.cpp ends its long reasoning turn early, so in the same time Phobos produces about twice as many tokens (4,400 against 2,005 a round).
+<figure>
 
-Remember the desktop that takes 900 MiB one day and 1.5 GiB the next? I replayed the same session again, and this time another process grabbed 2 GiB of the card from the fourth request on, rewriting it every 250 ms so the driver couldn't page it out. This is my synthetic memory pressure test. Three rounds each:
+[![Phobos against llama.cpp on a coding agent's replayed work](images/agent.svg)](images/agent.svg)
+
+  <figcaption>
+
+Three rounds of each replayed task, mean and standard error. Blue is Phobos, orange is llama.cpp at its best setting on this card, `-ncmoe 31 -t 8`. The ratio next to each Phobos bar is how much faster Phobos is.
+  </figcaption>
+</figure>
+
+Phobos wins every task on every measure. It finishes 1.4 to 2 times faster, all three tasks in 155 seconds a round against 253. The rates of each engine stay within 2% across rounds. One caveat on `fib`: Phobos ends one answer early and writes about 640 tokens a round to llama.cpp's 733, so its wall time there covers a little less work. The rates are per token and compare as they are.
+
+Remember the desktop that takes 900 MiB one day and 1.5 GiB the next? I replayed that 8-request `fib` recording again, without thinking, and this time another process grabbed 2 GiB of the card from the fourth request on, rewriting it every 250 ms so the driver couldn't page it out. This is my synthetic memory pressure test. Three rounds each:
 
 | Replaying a pi session, 2 GiB taken from request 4 on | wall time | decode before | decode after | prompt before | prompt after |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -344,7 +358,7 @@ Phobos comes bundled with a pre-warmed kernel cache for six chip targets, from T
 
   <figcaption>
 
-The engines ran interleaved on an RTX 2080 SUPER, driver 610.88, except for the ternary model, which I re-measured against PrismML's latest build on driver 617.14[^7]. Blue is Phobos, orange is llama.cpp's CUDA backend, and green is PrismML's llama.cpp fork, which added the ternary format in the first place. The ratio next to each Phobos bar is its rate over the other engine's, so anything above 1.0x means Phobos is faster. The 35B runs against llama.cpp's best setting on this card, `-ncmoe 31 -t 8`.
+The engines ran interleaved on an RTX 2080 SUPER, driver 617.14[^7]. Blue is Phobos, orange is llama.cpp's CUDA backend, and green is PrismML's llama.cpp fork, which added the ternary format in the first place. The ratio next to each Phobos bar is its rate over the other engine's, so anything above 1.0x means Phobos is faster. The 35B runs against llama.cpp's best setting on this card, `-ncmoe 31 -t 8`.
   </figcaption>
 </figure>
 
@@ -352,16 +366,17 @@ Phobos's rate over llama.cpp's:
 
 | Model | Decode | Prompt |
 | --- | ---: | ---: |
-| Qwen3.5-0.8B-Q8_0 | 1.26x | 0.78x |
-| MiniCPM5-1B-Q8_0 | 1.13x | 0.62x |
-| Qwen3.5-4B-Q4_K_M | 1.03x | 0.80x |
-| Qwen3.8-27B-UD-IQ1_M | 1.43x | 1.12x |
-| Ternary-Bonsai-2-27B-PTQ1_0 (against PrismML's fork) | 0.93x | 1.27x |
-| Qwen3.6-35B-A3B-UD-Q4_K_M (against `-ncmoe 31 -t 8`) | 1.77x | 2.33x |
+| Qwen3.5-0.8B-Q8_0 | 1.31x | 0.81x |
+| MiniCPM5-1B-Q8_0 | 1.16x | 0.62x |
+| Qwen3.5-4B-Q4_K_M | 1.05x | 0.80x |
+| GLM-4.6V-Flash-Q4_K_M, text only | 0.94x | 0.59x |
+| Qwen3.8-27B-UD-IQ1_M | 1.43x | 1.14x |
+| Ternary-Bonsai-2-27B-PTQ1_0 (against PrismML's fork) | 0.93x | 1.24x |
+| Qwen3.6-35B-A3B-UD-Q4_K_M (against `-ncmoe 31 -t 8`) | 1.82x | 2.24x |
 
 Decode is 128 tokens everywhere. Prompts are 512 tokens, except for the two 27B models, where I can only fit 128.
 
-Take the numbers with a grain of salt. On the 35B, llama.cpp has no expert cache at all, so that number compares two designs, not two sets of kernels. For Q4_K_M, which is bandwidth-bound, it's a tie. Prompt processing on the small models still loses. The longer the prompt, the bigger the gap. I haven't really started on that yet.
+Take the numbers with a grain of salt. On the 35B, llama.cpp has no expert cache at all, so that number compares two designs, not two sets of kernels. For Q4_K_M, which is bandwidth-bound, it's close to a tie: Phobos is 5% ahead on Qwen3.5-4B and 6% behind on GLM-4.6V-Flash. Prompt processing on the small models still loses. The longer the prompt, the bigger the gap. I haven't really started on that yet.
 
 What I'm proud of is that most of the gains are not model-specific. My generic engine spit out a fused kernel for Qwen3.5 with its DeltaNet. The fusion pass doesn't know what it's looking at and it is not specialized. It only knows that a value never leaving a block can stay in shared memory, and that a barrier is required when another block reads it. The same engine works for `llama` without changes. 
 `Q4_K_M` worked out of the box, and gains typically apply across all models. In a way, the whole exercise is silly: if you just want maximum performance, you can ask Claude to spit out CUDA code. But this was my little experiment and the goal was never to beat anything. It was to learn, gain an understanding and see what's possible.
@@ -392,7 +407,7 @@ The source and release are available at [github.com/joa/phobos-lang](https://git
 [^4]: The delta rule's chunkwise parallel form is [Parallelizing Linear Transformers with the Delta Rule over Sequence Length — Yang et al., 2024](https://arxiv.org/abs/2406.06484); the gated variant Qwen3.5 uses is [Gated Delta Networks — Yang et al., 2024](https://arxiv.org/abs/2412.06464). Kimi Delta Attention comes from [Kimi Linear — Kimi Team, 2025](https://arxiv.org/abs/2510.26692) and extends Gated DeltaNet with finer-grained gating.
 [^5]: [GGUF file format specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 [^6]: [Getting Started with CUDA Graphs](https://developer.nvidia.com/blog/cuda-graphs/)
-[^7]: Measured with `scripts/bench.py`, which runs both engines interleaved and checks the card for contention first. llama.cpp is build 4d19b2876 (10636), PrismML's fork is build b10754, measured on driver 617.14; everything else ran on driver 610.88. Every table, the exact commands and the agent replay are in the repo's [BENCHMARKS.md](https://github.com/joa/phobos-lang/blob/main/BENCHMARKS.md).
+[^7]: Measured with `scripts/bench.py`, which runs both engines interleaved and checks the card for contention first. llama.cpp is build 4d19b2876 (10636), PrismML's fork is build b10754, all measured on driver 617.14. Every table, the exact commands and the agent replay are in the repo's [BENCHMARKS.md](https://github.com/joa/phobos-lang/blob/main/BENCHMARKS.md).
 [^8]: The block layout of every format is in [`ggml-quants.c`](https://github.com/ggml-org/ggml/blob/master/src/ggml-quants.c), the reference every decoder here was written against and checked with `quant_check`.
 [^9]: [PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp) adds PTQ1_0 and the Hadamard rotation.
 [^11]: Rotating with a randomized Hadamard transform before quantizing is from [QuIP# — Tseng et al., 2024](https://arxiv.org/abs/2402.04396); [QuaRot — Ashkboos et al., 2024](https://arxiv.org/abs/2404.00456) rotates the activations at runtime, too. [SpinQuant — Liu et al., 2024](https://arxiv.org/abs/2405.16406) shows that some random rotations are a lot better than others.
