@@ -188,6 +188,13 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
   let lightDir = normalize(mix(sunDir, moonDir, moonBlend));
   let lightY = mix(sunY, moonDir.y, moonBlend) - 0.2;
   let lightCol = mix(sunCol, vec3f(0.72, 0.78, 1.0) * 0.12, moonBlend);
+  // A cloud is lit by the sun's full irradiance at any elevation (unlike a ground
+  // plane, there is no cosine term); the dimming toward the horizon is air mass,
+  // which sunCol already carries. Saturating ramp, so midday tops reach ~1.
+  let litScale = select(0.4 * sin(clamp(-lightY / 0.15, 0.0, 1.0) * PI), 1.0 - exp(-4.0 * lightY), lightY >= 0.0);
+  // Powder darkening is a back-lit-edge effect; looking into the sun, forward
+  // scattering makes those same edges the silver lining, so fade it out there.
+  let powderWeight = 1.0 - smoothstep(-0.2, 0.7, cosTheta);
 
   let slopeFactor = clamp(abs(lightDir.y) * 10.0, 0.0, 1.0);
   let signLY = select(1.0, -1.0, lightDir.y + 0.001 < 0.0);
@@ -205,25 +212,30 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
     }
 
     let od = shadowOD(pos, shadowDir);
-    let shadowAtt = exp(-od * sky.cloudSigmaE);
+    // Single-scatter Beer alone turns interiors grey; multiply-scattered light
+    // penetrates far deeper. Max of the Beer term and a weaker, slower-decaying
+    // one (Schneider, "Nubis: Authoring Real-Time Volumetric Cloudscapes",
+    // SIGGRAPH 2017).
+    let shadowAtt = max(exp(-od * sky.cloudSigmaE), 0.4 * exp(-0.25 * od * sky.cloudSigmaE));
     // Beer–powder (Schneider, "Real-Time Volumetric Cloudscapes of Horizon:
     // Zero Dawn"): light in optically thin regions has not yet in-scattered, so
     // lit cloud edges darken into the cauliflower look. Floored at 0.4 so thin
     // wisps dim rather than go black.
-    let powder = mix(0.4, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE));
+    let powder = mix(1.0, mix(0.4, 1.0, 1.0 - exp(-2.0 * od * sky.cloudSigmaE)), powderWeight);
 
     let relH = clamp((pos.y - sky.cloudBase) / (sky.cloudTop - sky.cloudBase), 0.0, 1.0);
     let topSoften = 1.0 - 0.22 * pow(relH * shadowAtt, 2.5);
-
-    let litScale = select(0.4 * sin(clamp(-lightY / 0.15, 0.0, 1.0) * PI), lightY, lightY >= 0.0);
 
     let Ldirect = lightCol * litScale
                 * shadowAtt * powder
                 * (0.72 + 0.28 * hgBoost) * 1.05
                 * topSoften;
 
-    let Lambient = sky.zenithColor * (0.12 + 0.28 * relH)
-                 + sky.horizonColor * (0.15 + 0.18 * (1.0 - relH));
+    // Light bounced around inside the cloud loses most of the sky's tint, and
+    // the pale keyframe horizon blue is the one AgX turns mauve — half-desaturate.
+    let skyFill = sky.zenithColor * (0.12 + 0.28 * relH)
+                + sky.horizonColor * (0.15 + 0.18 * (1.0 - relH));
+    let Lambient = mix(vec3f(dot(skyFill, vec3f(0.2126, 0.7152, 0.0722))), skyFill, 0.5);
 
     let Lsample = Ldirect + Lambient;
     let extinction = rho * sky.cloudSigmaE * stepSize;
@@ -238,16 +250,10 @@ fn renderClouds(rayOrigin: vec3f, rayDir: vec3f, sunDir: vec3f, sunY: f32, noise
     }
   }
 
-  var alpha = clamp(1.0 - transmittance, 0.0, 0.95);
-  if (alpha < 0.004) {
-    return vec4f(0.0);
-  }
-
+  // Radiance is premultiplied (each step is weighted by its own opacity), so the
+  // caller composites with `sky * (1 - a) + rgb`, not `mix`.
   let horizFade = smoothstep(0.01, 0.1, rd.y);
-  alpha *= horizFade;
-  radiance *= horizFade;
-
-  return vec4f(radiance, alpha);
+  return vec4f(radiance, 1.0 - transmittance) * horizFade;
 }
 
 // Stars / moon
@@ -538,7 +544,7 @@ fn fragmentMain(input: SkyVertexOutput) -> @location(0) vec4f {
 
   // Volumetric clouds
   let clouds = renderClouds(frame.cameraPosition, dir, frame.sunDirection, frame.sunDirection.y, input.texCoord);
-  color = mix(color, clouds.rgb, clouds.a);
+  color = color * (1.0 - clouds.a) + clouds.rgb;
 
   // Mountain silhouette band (0 < a < 1): mountains occlude sky and clouds,
   // matching the interior pixels' early return.
